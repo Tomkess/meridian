@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+dist/
+*.egg-info/
+
+# Env
+.env
+.env.local
+
+# Local config overrides
+.meridian.local.toml
+
+# macOS
+.DS_Store
+
+# Claude local
+CLAUDE.local.md
+.claude/settings.local.json

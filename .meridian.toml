@@ -1,0 +1,9 @@
+[meridian]
+lancedb_path = "~/.meridian/lancedb"
+ollama_model = "mxbai-embed-large"
+reranker_model = "BAAI/bge-reranker-v2-m3"
+specs_path = "specs"
+
+[databricks]
+host = ""
+token_env = "DATABRICKS_TOKEN"
