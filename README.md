@@ -2,7 +2,9 @@
 
 > Navigate your codebase with purpose.
 
-AI-driven development workflow system. Manages the full lifecycle from idea to production: captures, enriches with research, elaborates specs, tracks progress, and keeps everything aligned to a strategic vision.
+AI-driven development workflow system. Manages the full lifecycle from idea to production — captures ideas, enriches with research, elaborates specs, plans work, tracks progress, and keeps everything aligned to a strategic vision.
+
+Designed to be **installed into other projects**, not used standalone.
 
 ---
 
@@ -24,20 +26,62 @@ AI-driven development workflow system. Manages the full lifecycle from idea to p
 ├──────────────────────────────────┼──────────────────────────────────────┤
 │  CLI  (mechanical ops)           │  SLASH COMMANDS  (AI reasoning)      │
 │                                  │                                      │
-│  meridian new "idea"             │  /vision      read/update north star │
-│  meridian enrich <f> <src>       │  /goal new    validated goal         │
-│  meridian status                 │  /idea        capture → stub spec    │
-│  meridian close <f> -s <s>       │  /spec        elaborate spec         │
-│  meridian index                  │  /connect-dots  cross-feature map    │
-│  meridian sync-jobs              │  /breakdown   technical decomp       │
-│  meridian transition             │  /plan        phased impl plan       │
-│                                  │  /roadmap     goals × features       │
-│  RESEARCH PIPELINE               │  /challenge   stress-test idea       │
-│  source → extract → chunk        │  /decision    write ADR              │
+│  meridian init                   │  /vision      read/update north star │
+│  meridian new "idea"             │  /goal new    validated goal         │
+│  meridian enrich <f> <src>       │  /idea        capture → stub spec    │
+│  meridian status                 │  /spec        elaborate spec         │
+│  meridian close <f> -s <s>       │  /connect-dots  cross-feature map    │
+│  meridian index                  │  /breakdown   technical decomp       │
+│  meridian transition             │  /tasks       atomic task list       │
+│  meridian guide                  │  /roadmap     goals × features       │
+│                                  │                                      │
+│  RESEARCH PIPELINE               │  Rule: CLI owns ops.                 │
+│  source → extract → chunk        │        Skills own reasoning.         │
 │        → embed (Ollama)          │                                      │
-│        → LanceDB                 │  Rule: CLI owns ops.                 │
-│        → sources/ + spec         │        Skills own reasoning.         │
+│        → LanceDB                 │                                      │
 └──────────────────────────────────┴──────────────────────────────────────┘
+```
+
+---
+
+## Installation
+
+### 1. Install the package
+
+```bash
+# recommended
+uv add meridian
+
+# or
+pip install meridian
+```
+
+### 2. Bootstrap your project
+
+Run once in your project root:
+
+```bash
+meridian init
+```
+
+This creates:
+- `.meridian.toml` — config file
+- `specs/` — feature directory with `VISION.md`, `STEERING.md`, `CYCLES.md`, `SKILLS.md`, `REGISTRY.md`, `goals/`, `decisions/`
+- `.claude/commands/` — 14 Claude Code skill files
+
+### 3. Set up Ollama (for research features)
+
+Required only for `meridian enrich` and `meridian search`:
+
+```bash
+ollama serve
+ollama pull mxbai-embed-large
+```
+
+### 4. Check your setup
+
+```bash
+meridian guide
 ```
 
 ---
@@ -53,8 +97,8 @@ flowchart TD
     F -->|/spec| S["📋 Structured spec\nACs, risks, deps"]
     S -->|/connect-dots| CD["🔗 Cross-feature\nawareness"]
     S -->|/breakdown| B["⚙️ breakdown.md\ncomponents + effort"]
-    B -->|/plan| P["🗺️ Phased plan\nconversational"]
-    P --> CODE["💻 Implementation"]
+    B -->|/tasks| T["✅ tasks.md\nPre: preconditions"]
+    T --> CODE["💻 Implementation"]
     CODE -->|meridian close --status done| D["✅ done"]
     D -->|git merge → meridian transition| PROD["🚀 in-production"]
 
@@ -70,8 +114,8 @@ flowchart TD
 ```mermaid
 stateDiagram-v2
     [*] --> idea
-    idea --> draft : /spec or meridian close
-    draft --> in_progress : meridian close -s in-progress
+    idea --> draft : /spec
+    draft --> in_progress : /tasks
     in_progress --> blocked : --blocked-by required
     blocked --> in_progress : unblocked
     in_progress --> done : meridian close -s done
@@ -81,7 +125,7 @@ stateDiagram-v2
     draft --> abandoned
     in_progress --> abandoned
     blocked --> abandoned
-    abandoned --> idea : revived
+    abandoned --> idea : meridian revive
 ```
 
 ---
@@ -90,13 +134,25 @@ stateDiagram-v2
 
 | Command | What it does |
 |---|---|
+| `meridian init` | Bootstrap Meridian: .meridian.toml + specs/ + .claude/commands/ |
+| `meridian status` | Dashboard: all features × lifecycle × task progress [N/M] |
 | `meridian new "idea text"` | Allocate FEAT-NNN, write stub spec, update REGISTRY |
-| `meridian enrich feat-007 <src>` | Ingest PDF/URL → extract → embed → LanceDB |
-| `meridian status` | Dashboard: all features × lifecycle × status |
+| `meridian new "idea" --goal goal-01 --appetite m` | Capture with goal link and appetite |
 | `meridian close feat-007 --status <s>` | Lifecycle transition with guard rails |
-| `meridian index` | Rebuild REGISTRY.md + re-embed all sources |
-| `meridian sync-jobs` | Auto-link Databricks jobs to specs |
-| `meridian transition --from-merge <branch>` | Auto-advance to `in-production` on merge |
+| `meridian close feat-007 --status blocked --blocked-by <r>` | Block with explicit reason |
+| `meridian close feat-007 --status abandoned --abandoned-reason <r>` | Abandon with reason (persists through revive) |
+| `meridian close feat-007 --confidence high` | Update problem confidence: low \| medium \| high |
+| `meridian cycle feat-007 --set 2026-Q2` | Assign to planning cycle |
+| `meridian cycle feat-007 --clear` | Remove from cycle |
+| `meridian revive feat-007` | Revive abandoned feature → idea (preserves reason) |
+| `meridian enrich feat-007 report.pdf` | Ingest PDF / URL / file → LanceDB |
+| `meridian search "query"` | Semantic search across all enriched research |
+| `meridian index` | Rebuild REGISTRY.md + full vector index |
+| `meridian link-job feat-007 <job>` | Link a Databricks job to a feature |
+| `meridian unlink-job feat-007` | Remove Databricks job link |
+| `meridian transition --from-merge feat-007/slug` | Auto-transition to in-production after merge |
+| `meridian guide` | 8-step project advisor |
+| `meridian help` | Full manual |
 
 **Valid `--status` values:** `idea` `draft` `in-progress` `blocked` `done` `in-production` `abandoned`
 
@@ -108,67 +164,18 @@ stateDiagram-v2
 |---|---|---|
 | `/vision` | `VISION.md` | `VISION.md` |
 | `/goal new` | `VISION.md`, `goals/` | `goals/goal-NN.md` |
-| `/goal review` | `VISION.md`, `goals/`, all specs | — (report only) |
 | `/idea <text>` | `VISION.md`, `goals/`, REGISTRY | runs `meridian new` |
-| `/spec <feat-id>` | spec, goal, summaries | `spec.md` body + status→draft |
+| `/spec <feat-id>` | spec, goal, sources, STEERING.md | `spec.md` body; status→draft |
+| `/breakdown <feat-id>` | spec, goal, deps, STEERING.md | `breakdown.md` |
+| `/tasks <feat-id>` | spec, breakdown, STEERING.md | `tasks.md`; status→in-progress |
+| `/plan <feat-id>` | spec, breakdown | `plan.md` (optional, for `l` appetite) |
 | `/connect-dots [feat-id]` | all specs | — (report only) |
-| `/breakdown <feat-id>` | spec, goal, deps | `breakdown.md` + status→in-progress |
-| `/plan <feat-id>` | spec, breakdown | — (conversational output) |
 | `/roadmap` | VISION, goals, all specs | — (report only) |
-| `/challenge <subject>` | VISION, goals, spec | — (7-point stress test) |
+| `/challenge <subject>` | VISION, goals, spec | — (stress-test report) |
 | `/decision <title>` | `decisions/` | `decisions/NNN-slug.md` |
-
----
-
-## Research pipeline (`meridian enrich`)
-
-```mermaid
-flowchart LR
-    SRC["Source\nPDF / URL / .txt"]
-    EXT["Extract text"]
-    CHK["Chunk\n~400 words, 40 overlap"]
-    EMB["Embed\nOllama mxbai-embed-large"]
-    LDB[("LanceDB\n~/.meridian/lancedb")]
-    SV["sources/\noriginal + .txt"]
-    FM["spec.md\nfrontmatter sources: []"]
-
-    SRC --> EXT --> CHK --> EMB --> LDB
-    EXT --> SV --> FM
-    EMB -.->|future: /connect-dots\nANN search| LDB
-```
-
----
-
-## Stack
-
-| Layer | Technology |
-|---|---|
-| Embeddings | Ollama `mxbai-embed-large` (local, 1024-dim) |
-| Vector store | LanceDB at `~/.meridian/lancedb` (global, cross-branch) |
-| Reranker | `BAAI/bge-reranker-v2-m3` *(planned)* |
-| PDF extraction | pypdf |
-| URL extraction | httpx + beautifulsoup4 |
-| CLI framework | Typer + Rich |
-| Spec format | Markdown + YAML frontmatter |
-
----
-
-## Installation
-
-```bash
-# From repo root
-pip install -e .
-
-# Verify
-meridian --help
-```
-
-**Ollama setup** (required for `enrich` and `index`):
-
-```bash
-ollama serve            # start the server
-ollama pull mxbai-embed-large
-```
+| `/ask [question]` | enriched research chunks | — (RAG answer) |
+| `/research <feat>` | all sources, search index | — (synthesis report) |
+| `/brief <feat> [source]` | source file | `summaries/*-brief.md` |
 
 ---
 
@@ -176,14 +183,17 @@ ollama pull mxbai-embed-large
 
 ```toml
 [meridian]
-specs_path    = "specs"
-lancedb_path  = "~/.meridian/lancedb"
-ollama_model  = "mxbai-embed-large"
+specs_path     = "specs"
+lancedb_path   = "~/.meridian/lancedb"   # global by default — shared across branches
+ollama_model   = "mxbai-embed-large"
 reranker_model = "BAAI/bge-reranker-v2-m3"
 
 [databricks]
 host      = "https://your-workspace.azuredatabricks.net"
-token_env = "DATABRICKS_TOKEN"
+token_env = "DATABRICKS_TOKEN"            # env var holding the PAT
+
+# Optional: override Databricks status fetch timeout (default 8s)
+# status_timeout = 8
 ```
 
 ---
@@ -194,33 +204,67 @@ token_env = "DATABRICKS_TOKEN"
 # 1. Set your north star
 /vision
 
-# 2. Create a strategic goal
+# 2. Fill in AI context for this codebase
+# Edit specs/STEERING.md with architecture rules, naming conventions, glossary
+
+# 3. Create a strategic goal
 /goal new
 
-# 3. Capture an idea
+# 4. Capture an idea
 /idea "portfolio rebalancing engine with drift detection"
 
-# 4. Add research
+# 5. Add research
 meridian enrich feat-001 ~/Downloads/rebalancing_paper.pdf
 meridian enrich feat-001 https://example.com/drift-detection
 
-# 5. Elaborate the spec (reads sources automatically)
+# 6. Elaborate the spec
 /spec feat-001
 
-# 6. Check cross-feature relationships
+# 7. Check cross-feature relationships
 /connect-dots
 
-# 7. Break it down technically
+# 8. Break it down technically
 /breakdown feat-001
 
-# 8. Plan implementation
-/plan feat-001
+# 9. Generate atomic tasks
+/tasks feat-001
 
-# 9. Track progress
+# 10. Track progress
 meridian status
 
-# 10. Ship it
+# 11. Ship it
 meridian close feat-001 --status done
 # → after merge:
-meridian transition --from-merge feat/feat-001-rebalancing
+meridian transition --from-merge feat-001/rebalancing-engine
+```
+
+---
+
+## Stack
+
+| Layer | Technology |
+|---|---|
+| Embeddings | Ollama `mxbai-embed-large` (local, 1024-dim) |
+| Vector store | LanceDB at `~/.meridian/lancedb` (global, cross-branch) |
+| Reranker | `BAAI/bge-reranker-v2-m3` (optional; install `meridian[rerank]`) |
+| PDF extraction | pypdf |
+| URL extraction | httpx + beautifulsoup4 |
+| CLI framework | Typer + Rich |
+| Spec format | Markdown + YAML frontmatter |
+
+---
+
+## Development
+
+```bash
+git clone https://github.com/your-org/meridian
+cd meridian
+uv pip install -e ".[dev]"
+
+# Run tests
+pytest tests/
+
+# Static analysis
+ruff check .
+mypy meridian/
 ```
