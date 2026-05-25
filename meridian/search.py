@@ -3,8 +3,13 @@ Semantic search pipeline: query → embed → ANN → optional BGE rerank.
 """
 from __future__ import annotations
 
+import logging
+
 from meridian.config import MeridianConfig
 from meridian.enrich import embed, search_similar
+from meridian.specs import feat_display_name
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Reranker ─────────────────────────────────────────────────────────────── #
@@ -72,14 +77,26 @@ def semantic_search(
                 r["rerank_score"] = float(score)
                 results.append(r)
             return results
-        except (ImportError, Exception):
-            pass  # fall through to raw ANN
+        except ImportError:
+            pass  # sentence-transformers not installed; fall through to raw ANN
+        except Exception as e:
+            # V4: surface reranker failures so they are visible with MERIDIAN_DEBUG=1
+            logger.warning("BGE reranker failed (%s) — falling back to ANN results", e)
 
     return raw[:limit]
 
 
-def format_results(results: list[dict], query: str) -> str:
-    """Plain-text formatting suitable for skill/Claude consumption."""
+def format_results(
+    results: list[dict],
+    query: str,
+    cfg: MeridianConfig | None = None,
+) -> str:
+    """Plain-text formatting suitable for skill/Claude consumption.
+
+    Pass *cfg* to include the human-readable feature name alongside the
+    feat_id.  When *cfg* is absent the bare feat_id is used (backward-
+    compatible with callers that don't have a config available).
+    """
     if not results:
         return f'No results found for "{query}". Run `meridian enrich` to add research.'
 
@@ -88,8 +105,13 @@ def format_results(results: list[dict], query: str) -> str:
         score = r.get("rerank_score", r.get("_distance"))
         score_str = f"  score={score:.3f}" if isinstance(score, float) else ""
         text_preview = r["text"][:300].replace("\n", " ").strip()
+        label = (
+            feat_display_name(cfg.specs_path, r["feat_id"])
+            if cfg is not None
+            else r["feat_id"]
+        )
         lines.append(
-            f"{i}. [{r['feat_id']}] {r['source_name']} chunk {r['chunk_idx']}{score_str}\n"
+            f"{i}. [{label}] {r['source_name']} chunk {r['chunk_idx']}{score_str}\n"
             f"   {text_preview}"
         )
     return "\n\n".join(lines)

@@ -13,7 +13,7 @@ from pathlib import Path
 import frontmatter
 
 from meridian.config import MeridianConfig
-from meridian.specs import all_specs, task_progress, CONFIDENCE_VALUES
+from meridian.specs import CONFIDENCE_VALUES, all_specs, task_progress
 
 _STALE_BLOCKED_DAYS = 14  # flag features blocked longer than this
 
@@ -347,7 +347,7 @@ def _check_cycles(specs: list[dict]) -> StepResult:
     cycles = {s.get("cycle") for s in active if s.get("cycle")}
     return StepResult(
         7, "Cycles", subtitle, "ok",
-        f"All {len(active)} active feature(s) assigned to cycles: {', '.join(sorted(cycles))}.",
+        f"All {len(active)} active feature(s) assigned to cycles: {', '.join(sorted(str(c) for c in cycles))}.",
         None,
     )
 

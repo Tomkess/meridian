@@ -6,12 +6,14 @@ No SDK dependency — just httpx. Reads host + token from MeridianConfig.
 
 from __future__ import annotations
 
+import logging
 import os
-from typing import Optional
 
 import httpx as requests  # httpx is already a meridian dep; alias keeps the call sites unchanged
 
 from meridian.config import MeridianConfig
+
+logger = logging.getLogger(__name__)
 
 
 class DatabricksError(Exception):
@@ -62,14 +64,25 @@ _STATE_PRIORITY: dict[str, int] = {
 
 
 def _normalise_task_state(life: str, result: str) -> str:
-    """Map raw life_cycle_state + result_state into a single normalised token."""
-    if life in ("PENDING", "RUNNING", "TERMINATING", "BLOCKED"):
+    """Map raw life_cycle_state + result_state into a single normalised token.
+
+    V1: BLOCKED in Databricks means a task is waiting on an upstream dependency
+    within the same job — it is NOT actively running. Map it to PENDING so the
+    dashboard shows ⏳ rather than the misleading 🔄.
+    """
+    if life in ("RUNNING", "TERMINATING"):
         return "RUNNING"
+    if life in ("PENDING", "BLOCKED"):
+        return "PENDING"
     return result or life  # TERMINATED → result_state; others fall back to life
 
 
 def _aggregate_states(states: list[str]) -> str:
-    """Return the worst state across a list (highest priority wins)."""
+    """Return the worst state across a list (highest priority wins).
+
+    V3: Empty input returns "UNKNOWN" — callers display it as a dim fallback.
+    States not in _STATE_PRIORITY (e.g. custom names) get priority 0 (lowest).
+    """
     if not states:
         return "UNKNOWN"
     return max(states, key=lambda s: _STATE_PRIORITY.get(s.upper(), 0))
@@ -135,7 +148,7 @@ def resolve_job(cfg: MeridianConfig, id_or_name: str) -> tuple[int, str]:
 
 def latest_run_state(
     cfg: MeridianConfig, job_id: int, timeout: int = 5
-) -> Optional[str]:
+) -> str | None:
     """
     Return the normalised state of the most recent run for job_id, or None.
 
@@ -159,7 +172,9 @@ def latest_run_state(
         life = run.get("state", {}).get("life_cycle_state", "")
         result = run.get("state", {}).get("result_state", "")
         return _normalise_task_state(life, result)
-    except Exception:
+    except Exception as e:
+        # V2: log so MERIDIAN_DEBUG=1 surfaces the real error; degrade gracefully
+        logger.warning("Failed to fetch run state for job %s: %s", job_id, e)
         return None
 
 
@@ -168,7 +183,7 @@ def latest_task_states(
     job_id: int,
     task_keys: list[str],
     timeout: int = 8,
-) -> dict[str, Optional[str]]:
+) -> dict[str, str | None]:
     """
     Return a mapping of task_key → normalised state for the most recent run.
 
@@ -206,7 +221,7 @@ def latest_task_states(
             return {}
 
         task_list = r2.json().get("tasks", [])
-        result: dict[str, Optional[str]] = {}
+        result: dict[str, str | None] = {}
         for t in task_list:
             key = t.get("task_key", "")
             if key in task_keys:
@@ -220,12 +235,14 @@ def latest_task_states(
                 result[k] = None
 
         return result
-    except Exception:
+    except Exception as e:
+        # V2: log so MERIDIAN_DEBUG=1 surfaces the real error; degrade gracefully
+        logger.warning("Failed to fetch task states for job %s: %s", job_id, e)
         return {}
 
 
 def task_run_display(
-    task_states: dict[str, Optional[str]],
+    task_states: dict[str, str | None],
     task_keys: list[str],
 ) -> str:
     """
@@ -263,7 +280,7 @@ def task_run_display(
     return f"[dim]{agg}[/dim]"
 
 
-def run_state_display(state: Optional[str]) -> str:
+def run_state_display(state: str | None) -> str:
     """Map a raw overall-run state to a coloured display string (Rich markup)."""
     if state is None:
         return "[dim]∅[/dim]"

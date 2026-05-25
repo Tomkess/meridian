@@ -1,4 +1,5 @@
 import re
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -27,11 +28,29 @@ VALID_TRANSITIONS: dict[str, tuple[str, ...]] = {
 
 def _slugify(text: str, max_words: int = 5) -> str:
     words = re.sub(r"[^a-z0-9 ]", "", text.lower()).split()
-    return "_".join(words[:max_words])
+    slug = "_".join(words[:max_words])
+    return slug if slug else "untitled"  # G2: guard against all-symbol idea text
 
 
 def _today() -> str:
     return date.today().isoformat()
+
+
+def feat_display_name(specs_path: Path, feat_id: str) -> str:
+    """Return 'FEAT-NNN: readable name' for display in search results.
+
+    Derives the name from the directory slug (FEAT-001_add_search →
+    'add search') — no extra file I/O beyond a glob.  Falls back to the
+    bare feat_id if no matching directory is found.
+    """
+    feat_id_upper = feat_id.upper()
+    dirs = list(specs_path.glob(f"{feat_id_upper}_*"))
+    if not dirs:
+        return feat_id_upper
+    # "FEAT-001_add_semantic_search" → strip prefix → "add_semantic_search" → "add semantic search"
+    slug_part = dirs[0].name[len(feat_id_upper) + 1:]
+    readable = slug_part.replace("_", " ")
+    return f"{feat_id_upper}: {readable}"
 
 
 # --------------------------------------------------------------------------- #
@@ -50,6 +69,18 @@ def save_spec(spec_path: Path, data: dict[str, Any]) -> None:
     data = dict(data)  # don't mutate caller's dict
     body = data.pop("_body", "")
     data.pop("_path", None)
+
+    # B5: skip write when content hasn't actually changed (avoids spurious `updated` bumps)
+    if spec_path.exists():
+        try:
+            existing = frontmatter.load(str(spec_path))
+            existing_meta = {k: v for k, v in existing.metadata.items() if k != "updated"}
+            new_meta = {k: v for k, v in data.items() if k != "updated"}
+            if existing_meta == new_meta and existing.content.strip() == body.strip():
+                return
+        except Exception:
+            pass  # if comparison fails, proceed with write
+
     data["updated"] = _today()
     post = frontmatter.Post(body, **data)
     spec_path.write_text(frontmatter.dumps(post) + "\n")
@@ -60,8 +91,12 @@ def all_specs(specs_dir: Path) -> list[dict[str, Any]]:
     for spec_file in sorted(specs_dir.glob("FEAT-*/spec.md")):
         try:
             results.append(load_spec(spec_file))
-        except Exception:
-            pass
+        except Exception as e:
+            # B4: warn instead of silently dropping — a corrupt spec is actionable
+            print(
+                f"[meridian] Warning: could not load {spec_file.parent.name}/spec.md: {e}",
+                file=sys.stderr,
+            )
     return results
 
 
@@ -74,7 +109,7 @@ def next_feat_id(specs_dir: Path) -> str:
         d.name for d in specs_dir.iterdir()
         if d.is_dir() and re.match(r"FEAT-\d+", d.name)
     ]
-    nums = [int(re.match(r"FEAT-(\d+)", n).group(1)) for n in existing if re.match(r"FEAT-(\d+)", n)]
+    nums = [int(m.group(1)) for n in existing if (m := re.match(r"FEAT-(\d+)", n))]
     next_num = (max(nums) + 1) if nums else 1
     return f"FEAT-{next_num:03d}"
 
@@ -139,7 +174,17 @@ def create_spec(
 # Lifecycle transition
 # --------------------------------------------------------------------------- #
 
-def transition_spec(spec_path: Path, new_status: str) -> dict[str, Any]:
+def transition_spec(
+    spec_path: Path,
+    new_status: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Transition a spec to new_status in a single save.
+
+    `extra` lets callers attach additional field updates (e.g. blocked_by,
+    abandoned_reason, confidence) that are applied before the single write,
+    avoiding the double-save anti-pattern (B3).
+    """
     if new_status not in VALID_STATUSES:
         raise ValueError(f"Invalid status '{new_status}'. Valid: {', '.join(VALID_STATUSES)}")
 
@@ -163,6 +208,11 @@ def transition_spec(spec_path: Path, new_status: str) -> dict[str, Any]:
         data["abandoned_at"] = _today()
     if new_status == "idea":  # revive — clear date but preserve reason as historical note
         data["abandoned_at"] = None
+
+    # Apply caller-supplied extra fields after status logic so they take precedence
+    if extra:
+        data.update(extra)
+
     save_spec(spec_path, data)
     return data
 

@@ -9,7 +9,6 @@ import httpx
 
 from meridian.config import MeridianConfig
 
-
 # ─── Text extraction ──────────────────────────────────────────────────────── #
 
 def _is_url(s: str) -> bool:
@@ -84,7 +83,7 @@ def embed(text: str, model: str, base_url: str = "http://localhost:11434") -> li
             timeout=60,
         )
         if resp.status_code in (400, 404):
-            # Fall back to legacy endpoint
+            # Fall back to legacy endpoint (<0.2.0)
             resp = httpx.post(
                 f"{base_url}/api/embeddings",
                 json={"model": model, "prompt": text},
@@ -100,6 +99,13 @@ def embed(text: str, model: str, base_url: str = "http://localhost:11434") -> li
             f"Cannot connect to Ollama at {base_url}.\n"
             "Is Ollama running? Start it with: ollama serve\n"
             f"Is the model pulled? Run: ollama pull {model}"
+        )
+    except httpx.TimeoutException:
+        # B2: surface timeout as a friendly message rather than a raw exception
+        raise RuntimeError(
+            f"Ollama timed out while embedding (model: {model}).\n"
+            "The model may still be loading — wait a moment and retry.\n"
+            f"To check: ollama run {model} \"hello\""
         )
 
 
@@ -135,9 +141,13 @@ def upsert_chunks(
     if not chunks:
         return
     table = _open_table(lancedb_path, len(vectors[0]))
-    # Remove stale entries for this source before re-adding
+    # Remove stale entries for this source before re-adding.
+    # B1: escape single quotes to avoid SQL injection from user-supplied source names
+    # (e.g. O'Reilly_report.pdf or URLs with apostrophes).
+    safe_feat = feat_id.replace("'", "''")
+    safe_src = source_name.replace("'", "''")
     try:
-        table.delete(f"feat_id = '{feat_id}' AND source_name = '{source_name}'")
+        table.delete(f"feat_id = '{safe_feat}' AND source_name = '{safe_src}'")
     except Exception:
         pass
     rows = [
