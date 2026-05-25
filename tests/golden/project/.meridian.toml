@@ -1,0 +1,7 @@
+[meridian]
+specs_path = "specs"
+lancedb_path = ".meridian/lancedb"
+
+[databricks]
+host = ""
+token_env = "DATABRICKS_TOKEN"

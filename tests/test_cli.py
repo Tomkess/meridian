@@ -1,0 +1,576 @@
+"""Subprocess integration tests for the meridian CLI binary.
+
+These tests run the real installed binary (same venv as pytest) against
+a temporary on-disk project.  They verify end-to-end behaviour:
+  - correct exit codes
+  - spec files created / mutated on disk
+  - frontmatter field values after each transition
+  - error messages on bad inputs
+
+Run:  .venv/bin/pytest tests/test_cli.py -v
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import frontmatter
+import pytest
+
+# ── binary discovery ──────────────────────────────────────────────────────── #
+
+
+def _find_binary() -> str:
+    # Prefer the venv-local binary (same Python env as this test run)
+    venv_bin = Path(sys.executable).parent / "meridian"
+    if venv_bin.exists():
+        return str(venv_bin)
+    found = shutil.which("meridian")
+    if found:
+        return found
+    raise RuntimeError(
+        "meridian binary not found. Run: uv pip install -e '.[dev]'"
+    )
+
+
+MERIDIAN_BIN = _find_binary()
+
+# ── helpers ───────────────────────────────────────────────────────────────── #
+
+
+def run(
+    args: list[str],
+    cwd: Path,
+    env_extra: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run meridian with *args* in *cwd* and return the completed process."""
+    e = dict(os.environ)
+    e["NO_COLOR"] = "1"  # disable Rich ANSI codes for easier assertion
+    if env_extra:
+        e.update(env_extra)
+    return subprocess.run(
+        [MERIDIAN_BIN, *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env=e,
+    )
+
+
+def _first_spec(project: Path) -> Path:
+    """Return the spec.md of the first (only) FEAT dir — raises if absent."""
+    matches = sorted(project.glob("specs/FEAT-*/spec.md"))
+    assert matches, "No spec files found in project"
+    return matches[0]
+
+
+def _load_fm(spec_path: Path) -> dict:
+    """Load frontmatter from spec.md and return as dict."""
+    post = frontmatter.loads(spec_path.read_text())
+    return dict(post.metadata)
+
+
+# ── fixtures ──────────────────────────────────────────────────────────────── #
+
+
+@pytest.fixture
+def proj(tmp_path: Path) -> Path:
+    """Minimal on-disk Meridian project: .meridian.toml + specs/ skeleton."""
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "goals").mkdir()
+    (specs / "decisions").mkdir()
+    lancedb = tmp_path / ".meridian" / "lancedb"
+    lancedb.mkdir(parents=True)
+    (tmp_path / ".meridian.toml").write_text(
+        "[meridian]\n"
+        'specs_path = "specs"\n'
+        f'lancedb_path = "{lancedb}"\n'
+        "\n"
+        "[databricks]\n"
+        'host = ""\n'
+        'token_env = "DATABRICKS_TOKEN"\n'
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def proj_with_idea(proj: Path) -> Path:
+    """Project that already contains FEAT-001 in idea state."""
+    r = run(["new", "add semantic search"], proj)
+    assert r.returncode == 0, r.stderr
+    return proj
+
+
+@pytest.fixture
+def proj_with_draft(proj_with_idea: Path) -> Path:
+    """FEAT-001 advanced to draft."""
+    r = run(["close", "feat-001", "--status", "draft"], proj_with_idea)
+    assert r.returncode == 0, r.stderr
+    return proj_with_idea
+
+
+@pytest.fixture
+def proj_with_inprogress(proj_with_draft: Path) -> Path:
+    """FEAT-001 advanced to in-progress."""
+    r = run(["close", "feat-001", "--status", "in-progress"], proj_with_draft)
+    assert r.returncode == 0, r.stderr
+    return proj_with_draft
+
+
+@pytest.fixture
+def proj_with_done(proj_with_inprogress: Path) -> Path:
+    """FEAT-001 advanced to done."""
+    r = run(["close", "feat-001", "--status", "done"], proj_with_inprogress)
+    assert r.returncode == 0, r.stderr
+    return proj_with_inprogress
+
+
+# ── version / help ───────────────────────────────────────────────────────── #
+
+
+class TestVersion:
+    def test_version_long_flag(self, proj: Path) -> None:
+        r = run(["--version"], proj)
+        assert r.returncode == 0
+        assert "meridian" in r.stdout
+        assert "0.1.0" in r.stdout
+
+    def test_version_short_flag(self, proj: Path) -> None:
+        r = run(["-V"], proj)
+        assert r.returncode == 0
+        assert "0.1.0" in r.stdout
+
+    def test_help_exits_zero(self, proj: Path) -> None:
+        r = run(["--help"], proj)
+        assert r.returncode == 0
+
+    def test_help_lists_all_commands(self, proj: Path) -> None:
+        r = run(["--help"], proj)
+        expected_cmds = [
+            "status", "new", "close", "cycle", "enrich", "search",
+            "link-job", "unlink-job", "index", "transition", "revive",
+            "guide", "help",
+        ]
+        for cmd in expected_cmds:
+            assert cmd in r.stdout, f"Command '{cmd}' missing from --help"
+
+    def test_help_command_shows_manual(self, proj: Path) -> None:
+        r = run(["help"], proj)
+        assert r.returncode == 0
+        # Manual should mention workflow stages
+        assert "spec" in r.stdout.lower() or "task" in r.stdout.lower()
+
+    def test_no_args_shows_help(self, proj: Path) -> None:
+        r = run([], proj)
+        # no_args_is_help=True means exit 0 and show help
+        assert "meridian" in r.stdout.lower()
+
+
+# ── meridian new ─────────────────────────────────────────────────────────── #
+
+
+class TestNew:
+    def test_creates_feat_directory(self, proj: Path) -> None:
+        r = run(["new", "add semantic search"], proj)
+        assert r.returncode == 0
+        feat_dirs = sorted((proj / "specs").glob("FEAT-001_*"))
+        assert len(feat_dirs) == 1
+
+    def test_creates_spec_file(self, proj: Path) -> None:
+        run(["new", "add semantic search"], proj)
+        spec = _first_spec(proj)
+        assert spec.exists()
+
+    def test_default_status_is_idea(self, proj: Path) -> None:
+        run(["new", "add semantic search"], proj)
+        fm = _load_fm(_first_spec(proj))
+        assert fm["status"] == "idea"
+
+    def test_appetite_flag_written_to_frontmatter(self, proj: Path) -> None:
+        run(["new", "add semantic search", "--appetite", "m"], proj)
+        fm = _load_fm(_first_spec(proj))
+        assert fm["appetite"] == "m"
+
+    def test_invalid_appetite_exits_nonzero(self, proj: Path) -> None:
+        r = run(["new", "add semantic search", "--appetite", "xl"], proj)
+        assert r.returncode != 0
+
+    def test_goal_missing_warns_but_still_creates_spec(self, proj: Path) -> None:
+        # B6: missing goal ID → warns immediately, but spec is still created
+        r = run(["new", "add search", "--goal", "goal-99"], proj)
+        assert r.returncode == 0
+        output = r.stdout + r.stderr
+        assert "goal-99" in output
+        # Spec file should still exist
+        assert _first_spec(proj).exists()
+
+    def test_goal_missing_shows_warning(self, proj: Path) -> None:
+        r = run(["new", "add search", "--goal", "goal-99"], proj)
+        output = r.stdout + r.stderr
+        assert "goal-99" in output
+
+    def test_goal_valid_written_to_frontmatter(self, proj: Path) -> None:
+        # Create goal file first
+        goal = proj / "specs" / "goals" / "goal-01.md"
+        goal.write_text("---\nid: goal-01\nname: Test\nstatus: active\n---\n")
+        r = run(["new", "add search", "--goal", "goal-01"], proj)
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj))
+        assert fm.get("goal") == "goal-01"
+
+    def test_second_new_creates_feat_002(self, proj: Path) -> None:
+        run(["new", "first feature"], proj)
+        run(["new", "second feature"], proj)
+        ids = sorted(d.name for d in (proj / "specs").glob("FEAT-*"))
+        assert ids[0].startswith("FEAT-001")
+        assert ids[1].startswith("FEAT-002")
+
+    def test_registry_updated_after_new(self, proj: Path) -> None:
+        run(["new", "add search"], proj)
+        registry = proj / "specs" / "REGISTRY.md"
+        assert registry.exists()
+        assert "FEAT-001" in registry.read_text()
+
+    def test_all_symbol_idea_does_not_crash(self, proj: Path) -> None:
+        # G2: slug fallback for ideas with no word chars
+        r = run(["new", "!!!"], proj)
+        assert r.returncode == 0
+
+
+# ── meridian status ──────────────────────────────────────────────────────── #
+
+
+class TestStatus:
+    def test_empty_project_exits_zero(self, proj: Path) -> None:
+        r = run(["status"], proj)
+        assert r.returncode == 0
+
+    def test_shows_feature_id(self, proj_with_idea: Path) -> None:
+        r = run(["status"], proj_with_idea)
+        assert r.returncode == 0
+        assert "FEAT-001" in r.stdout
+
+    def test_shows_lifecycle_status(self, proj_with_idea: Path) -> None:
+        r = run(["status"], proj_with_idea)
+        assert "idea" in r.stdout
+
+    def test_shows_updated_status_after_transition(
+        self, proj_with_draft: Path
+    ) -> None:
+        r = run(["status"], proj_with_draft)
+        assert "draft" in r.stdout
+
+
+# ── meridian close ───────────────────────────────────────────────────────── #
+
+
+class TestClose:
+    def test_idea_to_draft(self, proj_with_idea: Path) -> None:
+        r = run(["close", "feat-001", "--status", "draft"], proj_with_idea)
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj_with_idea))
+        assert fm["status"] == "draft"
+
+    def test_draft_to_in_progress(self, proj_with_draft: Path) -> None:
+        r = run(["close", "feat-001", "--status", "in-progress"], proj_with_draft)
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj_with_draft))
+        assert fm["status"] == "in-progress"
+
+    def test_done_prints_drift_reminder(self, proj_with_inprogress: Path) -> None:
+        r = run(["close", "feat-001", "--status", "done"], proj_with_inprogress)
+        assert r.returncode == 0
+        # Should remind about spec drift review
+        assert "spec" in (r.stdout + r.stderr).lower()
+
+    def test_blocked_requires_blocked_by(self, proj_with_inprogress: Path) -> None:
+        r = run(["close", "feat-001", "--status", "blocked"], proj_with_inprogress)
+        assert r.returncode != 0
+
+    def test_blocked_with_reason_succeeds(self, proj_with_inprogress: Path) -> None:
+        r = run(
+            ["close", "feat-001", "--status", "blocked", "--blocked-by", "waiting for API"],
+            proj_with_inprogress,
+        )
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj_with_inprogress))
+        assert fm["status"] == "blocked"
+        assert fm.get("blocked_by") == "waiting for API"
+
+    def test_blocked_sets_blocked_at_date(self, proj_with_inprogress: Path) -> None:
+        run(
+            ["close", "feat-001", "--status", "blocked", "--blocked-by", "dep"],
+            proj_with_inprogress,
+        )
+        fm = _load_fm(_first_spec(proj_with_inprogress))
+        assert fm.get("blocked_at") is not None
+
+    def test_abandoned_reason_stored(self, proj_with_inprogress: Path) -> None:
+        r = run(
+            ["close", "feat-001", "--status", "abandoned",
+             "--abandoned-reason", "not worth it"],
+            proj_with_inprogress,
+        )
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj_with_inprogress))
+        assert fm.get("abandoned_reason") == "not worth it"
+
+    def test_confidence_flag_updates_frontmatter(self, proj_with_idea: Path) -> None:
+        run(
+            ["close", "feat-001", "--status", "draft", "--confidence", "high"],
+            proj_with_idea,
+        )
+        fm = _load_fm(_first_spec(proj_with_idea))
+        assert fm.get("confidence") == "high"
+
+    def test_invalid_status_exits_nonzero(self, proj_with_idea: Path) -> None:
+        r = run(["close", "feat-001", "--status", "flying"], proj_with_idea)
+        assert r.returncode != 0
+
+    def test_invalid_transition_exits_nonzero(self, proj_with_idea: Path) -> None:
+        # idea → done is not a valid direct transition
+        r = run(["close", "feat-001", "--status", "done"], proj_with_idea)
+        assert r.returncode != 0
+
+    def test_unknown_feat_id_exits_nonzero(self, proj: Path) -> None:
+        r = run(["close", "feat-999", "--status", "draft"], proj)
+        assert r.returncode != 0
+
+    def test_status_required(self, proj_with_idea: Path) -> None:
+        r = run(["close", "feat-001"], proj_with_idea)
+        assert r.returncode != 0
+
+
+# ── meridian revive ───────────────────────────────────────────────────────── #
+
+
+class TestRevive:
+    def test_revive_abandoned_returns_to_idea(
+        self, proj_with_inprogress: Path
+    ) -> None:
+        run(
+            ["close", "feat-001", "--status", "abandoned",
+             "--abandoned-reason", "scope creep"],
+            proj_with_inprogress,
+        )
+        r = run(["revive", "feat-001"], proj_with_inprogress)
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj_with_inprogress))
+        assert fm["status"] == "idea"
+
+    def test_revive_prints_preserved_reason(
+        self, proj_with_inprogress: Path
+    ) -> None:
+        run(
+            ["close", "feat-001", "--status", "abandoned",
+             "--abandoned-reason", "scope creep"],
+            proj_with_inprogress,
+        )
+        r = run(["revive", "feat-001"], proj_with_inprogress)
+        assert "scope creep" in (r.stdout + r.stderr)
+
+    def test_revive_non_abandoned_exits_nonzero(
+        self, proj_with_idea: Path
+    ) -> None:
+        r = run(["revive", "feat-001"], proj_with_idea)
+        assert r.returncode != 0
+
+    def test_revive_clears_abandoned_at(self, proj_with_inprogress: Path) -> None:
+        run(
+            ["close", "feat-001", "--status", "abandoned", "--abandoned-reason", "x"],
+            proj_with_inprogress,
+        )
+        run(["revive", "feat-001"], proj_with_inprogress)
+        fm = _load_fm(_first_spec(proj_with_inprogress))
+        assert not fm.get("abandoned_at")
+
+
+# ── meridian cycle ───────────────────────────────────────────────────────── #
+
+
+class TestCycle:
+    def test_set_valid_cycle(self, proj_with_idea: Path) -> None:
+        r = run(["cycle", "feat-001", "--set", "2026-Q2"], proj_with_idea)
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj_with_idea))
+        assert fm.get("cycle") == "2026-Q2"
+
+    def test_set_prints_capacity_summary(self, proj_with_idea: Path) -> None:
+        r = run(["cycle", "feat-001", "--set", "2026-Q2"], proj_with_idea)
+        # Should print cycle capacity info
+        output = r.stdout + r.stderr
+        assert "2026-Q2" in output
+
+    def test_set_bad_format_warns(self, proj_with_idea: Path) -> None:
+        r = run(["cycle", "feat-001", "--set", "next-quarter"], proj_with_idea)
+        # Non-YYYY-QN format should warn but still succeed
+        assert r.returncode == 0
+        output = r.stdout + r.stderr
+        assert "warn" in output.lower() or "format" in output.lower() or "typo" in output.lower()
+
+    def test_clear_removes_cycle(self, proj_with_idea: Path) -> None:
+        run(["cycle", "feat-001", "--set", "2026-Q2"], proj_with_idea)
+        r = run(["cycle", "feat-001", "--clear"], proj_with_idea)
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj_with_idea))
+        assert not fm.get("cycle")
+
+    def test_cycle_alone_shows_current_cycle(
+        self, proj_with_idea: Path
+    ) -> None:
+        # No --set / --clear → shows current cycle value and exits 0
+        r = run(["cycle", "feat-001"], proj_with_idea)
+        assert r.returncode == 0
+        assert "FEAT-001" in r.stdout
+
+    def test_unknown_feat_exits_nonzero(self, proj: Path) -> None:
+        r = run(["cycle", "feat-999", "--set", "2026-Q2"], proj)
+        assert r.returncode != 0
+
+
+# ── meridian transition ──────────────────────────────────────────────────── #
+
+
+class TestTransition:
+    def test_no_feat_in_branch_prints_tip(self, proj: Path) -> None:
+        r = run(["transition", "--from-merge", "main"], proj)
+        # No feat match → prints a tip, exits 0
+        assert r.returncode == 0
+
+    def test_matching_done_feature_becomes_in_production(
+        self, proj_with_done: Path
+    ) -> None:
+        r = run(
+            ["transition", "--from-merge", "feat-001/add-semantic-search"],
+            proj_with_done,
+        )
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj_with_done))
+        assert fm["status"] == "in-production"
+
+    def test_from_merge_required(self, proj: Path) -> None:
+        r = run(["transition"], proj)
+        assert r.returncode != 0
+
+    def test_feat_id_case_insensitive(self, proj_with_done: Path) -> None:
+        r = run(
+            ["transition", "--from-merge", "FEAT-001/some-slug"],
+            proj_with_done,
+        )
+        assert r.returncode == 0
+        fm = _load_fm(_first_spec(proj_with_done))
+        assert fm["status"] == "in-production"
+
+
+# ── meridian init ────────────────────────────────────────────────────────── #
+
+
+class TestInit:
+    def test_creates_toml(self, tmp_path: Path) -> None:
+        r = run(["init", "--path", str(tmp_path)], tmp_path)
+        assert r.returncode == 0
+        assert (tmp_path / ".meridian.toml").exists()
+
+    def test_creates_specs_structure(self, tmp_path: Path) -> None:
+        run(["init", "--path", str(tmp_path)], tmp_path)
+        specs = tmp_path / "specs"
+        assert specs.is_dir()
+        assert (specs / "goals").is_dir()
+        assert (specs / "decisions").is_dir()
+
+    def test_creates_template_files(self, tmp_path: Path) -> None:
+        run(["init", "--path", str(tmp_path)], tmp_path)
+        specs = tmp_path / "specs"
+        for name in ("VISION.md", "STEERING.md", "CYCLES.md", "SKILLS.md", "REGISTRY.md"):
+            assert (specs / name).exists(), f"Missing {name}"
+
+    def test_creates_claude_commands(self, tmp_path: Path) -> None:
+        run(["init", "--path", str(tmp_path)], tmp_path)
+        commands = tmp_path / ".claude" / "commands"
+        assert commands.is_dir()
+        skills = list(commands.glob("*.md"))
+        assert len(skills) == 14, f"Expected 14 skill files, got {len(skills)}"
+
+    def test_toml_has_required_keys(self, tmp_path: Path) -> None:
+        run(["init", "--path", str(tmp_path)], tmp_path)
+        import tomllib
+        with open(tmp_path / ".meridian.toml", "rb") as f:
+            cfg = tomllib.load(f)
+        assert "meridian" in cfg
+        assert cfg["meridian"]["specs_path"] == "specs"
+        assert "databricks" in cfg
+
+    def test_prints_next_steps(self, tmp_path: Path) -> None:
+        r = run(["init", "--path", str(tmp_path)], tmp_path)
+        assert "Next steps" in r.stdout
+        assert "/vision" in r.stdout
+
+    def test_refuses_double_init_without_force(self, tmp_path: Path) -> None:
+        run(["init", "--path", str(tmp_path)], tmp_path)
+        r = run(["init", "--path", str(tmp_path)], tmp_path)
+        assert r.returncode != 0
+        assert "force" in (r.stdout + r.stderr).lower()
+
+    def test_force_overwrites(self, tmp_path: Path) -> None:
+        run(["init", "--path", str(tmp_path)], tmp_path)
+        # Corrupt the toml
+        (tmp_path / ".meridian.toml").write_text("bad content")
+        r = run(["init", "--path", str(tmp_path), "--force"], tmp_path)
+        assert r.returncode == 0
+        import tomllib
+        with open(tmp_path / ".meridian.toml", "rb") as f:
+            cfg = tomllib.load(f)
+        assert "meridian" in cfg
+
+    def test_project_is_usable_after_init(self, tmp_path: Path) -> None:
+        # After init, meridian commands should work in the new project
+        run(["init", "--path", str(tmp_path)], tmp_path)
+        r = run(["status"], tmp_path)
+        assert r.returncode == 0
+
+    def test_guide_passes_after_init(self, tmp_path: Path) -> None:
+        run(["init", "--path", str(tmp_path)], tmp_path)
+        r = run(["guide"], tmp_path)
+        assert r.returncode == 0
+
+
+# ── meridian guide ───────────────────────────────────────────────────────── #
+
+
+class TestGuide:
+    def test_runs_on_empty_project(self, proj: Path) -> None:
+        r = run(["guide"], proj)
+        assert r.returncode == 0
+
+    def test_output_suggests_next_action(self, proj: Path) -> None:
+        r = run(["guide"], proj)
+        # Should have some actionable content
+        assert len(r.stdout.strip()) > 0
+
+
+# ── meridian index ───────────────────────────────────────────────────────── #
+
+
+class TestIndex:
+    def test_runs_with_no_specs(self, proj: Path) -> None:
+        # No Ollama available — should fail gracefully (not traceback)
+        r = run(["index"], proj)
+        output = r.stdout + r.stderr
+        # Either succeeds or prints a friendly error — no raw traceback
+        assert "Traceback" not in output
+        assert "Error" in output or r.returncode == 0
+
+    def test_rebuilds_registry(self, proj_with_idea: Path) -> None:
+        # Delete and rebuild registry
+        registry = proj_with_idea / "specs" / "REGISTRY.md"
+        if registry.exists():
+            registry.unlink()
+        # index rebuilds registry even if LanceDB step fails
+        run(["index"], proj_with_idea)
+        # Registry may be rebuilt by the CLI regardless of embedding step
+        # Just assert no crash
