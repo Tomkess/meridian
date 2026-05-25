@@ -1,0 +1,262 @@
+import re
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import frontmatter
+
+VALID_STATUSES = ("idea", "draft", "in-progress", "blocked", "done", "in-production", "abandoned")
+APPETITE_VALUES = ("xs", "s", "m", "l")
+APPETITE_LABELS = {"xs": "< 1 day", "s": "1–3 days", "m": "1–2 weeks", "l": "2–6 weeks"}
+CONFIDENCE_VALUES = ("low", "medium", "high")
+
+VALID_TRANSITIONS: dict[str, tuple[str, ...]] = {
+    "idea":          ("draft", "abandoned"),
+    "draft":         ("in-progress", "abandoned"),
+    "in-progress":   ("blocked", "done", "abandoned"),
+    "blocked":       ("in-progress", "abandoned"),
+    "done":          ("in-production", "in-progress"),
+    "in-production": ("done",),
+    "abandoned":     ("idea",),
+}
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+def _slugify(text: str, max_words: int = 5) -> str:
+    words = re.sub(r"[^a-z0-9 ]", "", text.lower()).split()
+    return "_".join(words[:max_words])
+
+
+def _today() -> str:
+    return date.today().isoformat()
+
+
+# --------------------------------------------------------------------------- #
+# Spec I/O
+# --------------------------------------------------------------------------- #
+
+def load_spec(spec_path: Path) -> dict[str, Any]:
+    post = frontmatter.load(str(spec_path))
+    data = dict(post.metadata)
+    data["_body"] = post.content
+    data["_path"] = spec_path
+    return data
+
+
+def save_spec(spec_path: Path, data: dict[str, Any]) -> None:
+    data = dict(data)  # don't mutate caller's dict
+    body = data.pop("_body", "")
+    data.pop("_path", None)
+    data["updated"] = _today()
+    post = frontmatter.Post(body, **data)
+    spec_path.write_text(frontmatter.dumps(post) + "\n")
+
+
+def all_specs(specs_dir: Path) -> list[dict[str, Any]]:
+    results = []
+    for spec_file in sorted(specs_dir.glob("FEAT-*/spec.md")):
+        try:
+            results.append(load_spec(spec_file))
+        except Exception:
+            pass
+    return results
+
+
+# --------------------------------------------------------------------------- #
+# FEAT-NNN allocation
+# --------------------------------------------------------------------------- #
+
+def next_feat_id(specs_dir: Path) -> str:
+    existing = [
+        d.name for d in specs_dir.iterdir()
+        if d.is_dir() and re.match(r"FEAT-\d+", d.name)
+    ]
+    nums = [int(re.match(r"FEAT-(\d+)", n).group(1)) for n in existing if re.match(r"FEAT-(\d+)", n)]
+    next_num = (max(nums) + 1) if nums else 1
+    return f"FEAT-{next_num:03d}"
+
+
+# --------------------------------------------------------------------------- #
+# Create spec
+# --------------------------------------------------------------------------- #
+
+SPEC_TEMPLATE = """\
+*Idea captured. Set `appetite` in frontmatter, then run `/spec` to elaborate.*
+"""
+
+TASKS_TEMPLATE = """\
+*No tasks yet. Run `/breakdown` then `/tasks` to generate an ordered task list.*
+"""
+
+def create_spec(
+    specs_dir: Path,
+    idea: str,
+    goal: str | None = None,
+    appetite: str | None = None,
+) -> Path:
+    feat_id = next_feat_id(specs_dir)
+    slug = _slugify(idea)
+    feat_dir = specs_dir / f"{feat_id}_{slug}"
+    feat_dir.mkdir(parents=True, exist_ok=True)
+    (feat_dir / "sources").mkdir(exist_ok=True)
+    (feat_dir / "summaries").mkdir(exist_ok=True)
+
+    today = _today()
+    metadata: dict[str, Any] = {
+        "id": feat_id.lower(),
+        "name": idea,
+        "status": "idea",
+        "goal": goal or "~",
+        "appetite": appetite or None,   # xs | s | m | l
+        "confidence": None,             # low | medium | high — how well the problem is understood
+        "cycle": None,                  # e.g. "2026-Q2"
+        "created": today,
+        "updated": today,
+        "tags": [],
+        "depends_on": [],
+        "enables": [],
+        "blocked_by": None,
+        "blocked_at": None,             # ISO date when blocked (for staleness detection)
+        "abandoned_reason": None,       # why it was killed (preserved through revive cycles)
+        "abandoned_at": None,           # ISO date when abandoned
+        "sources": [],
+        "scheduler": None,
+    }
+    post = frontmatter.Post(SPEC_TEMPLATE, **metadata)
+    spec_path = feat_dir / "spec.md"
+    spec_path.write_text(frontmatter.dumps(post) + "\n")
+
+    tasks_path = feat_dir / "tasks.md"
+    tasks_path.write_text(TASKS_TEMPLATE)
+
+    return spec_path
+
+
+# --------------------------------------------------------------------------- #
+# Lifecycle transition
+# --------------------------------------------------------------------------- #
+
+def transition_spec(spec_path: Path, new_status: str) -> dict[str, Any]:
+    if new_status not in VALID_STATUSES:
+        raise ValueError(f"Invalid status '{new_status}'. Valid: {', '.join(VALID_STATUSES)}")
+
+    data = load_spec(spec_path)
+    current = data.get("status", "idea")
+
+    allowed = VALID_TRANSITIONS.get(current, ())
+    if new_status not in allowed:
+        raise ValueError(
+            f"Cannot transition '{current}' → '{new_status}'. "
+            f"Allowed from '{current}': {', '.join(allowed) or 'none'}"
+        )
+
+    data["status"] = new_status
+    if new_status == "blocked":
+        data["blocked_at"] = _today()
+    else:
+        data["blocked_by"] = None   # clear stale reason when leaving blocked
+        data["blocked_at"] = None   # clear staleness timestamp when unblocked
+    if new_status == "abandoned":
+        data["abandoned_at"] = _today()
+    if new_status == "idea":  # revive — clear date but preserve reason as historical note
+        data["abandoned_at"] = None
+    save_spec(spec_path, data)
+    return data
+
+
+# --------------------------------------------------------------------------- #
+# Task progress
+# --------------------------------------------------------------------------- #
+
+def task_progress(feat_dir: Path) -> tuple[int, int] | None:
+    """Return (checked, total) checkbox counts from tasks.md.
+
+    Returns None when no real task items exist (stub or empty file).
+    Checked items are lines matching ``- [x]`` or ``- [X]``.
+    """
+    tasks_path = feat_dir / "tasks.md"
+    if not tasks_path.exists():
+        return None
+    text = tasks_path.read_text()
+    total = len(re.findall(r"^- \[[ xX]\]", text, re.MULTILINE))
+    if total == 0:
+        return None
+    checked = len(re.findall(r"^- \[[xX]\]", text, re.MULTILINE))
+    return (checked, total)
+
+
+# --------------------------------------------------------------------------- #
+# REGISTRY rebuild
+# --------------------------------------------------------------------------- #
+
+STATUS_ORDER = {s: i for i, s in enumerate(VALID_STATUSES)}
+
+
+def rebuild_registry(specs_dir: Path) -> None:
+    specs = all_specs(specs_dir)
+    specs.sort(key=lambda s: (STATUS_ORDER.get(s.get("status", "idea"), 99), s.get("id", "")))
+
+    goals_dir = specs_dir / "goals"
+    goals = []
+    if goals_dir.exists():
+        for gf in sorted(goals_dir.glob("*.md")):
+            gp = frontmatter.load(str(gf))
+            goals.append({
+                "id": gp.metadata.get("id", gf.stem),
+                "name": gp.metadata.get("name", gf.stem),
+                "status": gp.metadata.get("status", "active"),
+            })
+
+    lines = [
+        "# Meridian Registry",
+        "",
+        "Index of all features across all goals and lifecycle states.",
+        "",
+        "## Status Legend",
+        "`idea` `draft` `in-progress` `blocked` `done` `in-production` `abandoned`",
+        "",
+        "## Appetite Legend",
+        "`xs` < 1 day  ·  `s` 1–3 days  ·  `m` 1–2 weeks  ·  `l` 2–6 weeks",
+        "",
+        "## Confidence Legend",
+        "`low` problem poorly understood  ·  `medium` rough shape clear  ·  `high` well-defined",
+        "",
+        "## Features",
+        "",
+        "| ID | Name | Goal | Status | Appetite | Conf | Cycle | Updated |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+
+    for s in specs:
+        feat_id = s.get("id", "?").upper()
+        name = s.get("name", "Untitled")
+        goal = s.get("goal") or "—"
+        status = s.get("status", "idea")
+        appetite = s.get("appetite") or "—"
+        confidence = s.get("confidence") or "—"
+        cycle = s.get("cycle") or "—"
+        updated = s.get("updated", "—")
+        lines.append(f"| {feat_id} | {name} | {goal} | {status} | {appetite} | {confidence} | {cycle} | {updated} |")
+
+    if not specs:
+        lines.append("| — | — | — | — | — | — | — | — |")
+
+    lines += [
+        "",
+        "## Goals",
+        "",
+        "| ID | Name | Status |",
+        "|---|---|---|",
+    ]
+
+    for g in goals:
+        lines.append(f"| {g['id']} | {g['name']} | {g['status']} |")
+
+    if not goals:
+        lines.append("| — | — | — |")
+
+    lines.append("")
+    (specs_dir / "REGISTRY.md").write_text("\n".join(lines))
