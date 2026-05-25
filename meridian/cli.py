@@ -1,35 +1,67 @@
+import logging
+import os
 import re
 import unicodedata
 from pathlib import Path
-from typing import Optional
 
 import typer
+from rich import box
 from rich.console import Console
 from rich.table import Table
-from rich import box
 from rich.text import Text
 
+from meridian import __version__
 from meridian.config import load_config
 from meridian.specs import (
+    APPETITE_LABELS,
+    APPETITE_VALUES,
+    CONFIDENCE_VALUES,
+    VALID_STATUSES,
     all_specs,
     create_spec,
+    feat_display_name,
     load_spec,
     rebuild_registry,
     save_spec,
     task_progress,
     transition_spec,
-    VALID_STATUSES,
-    VALID_TRANSITIONS,
-    APPETITE_VALUES,
-    APPETITE_LABELS,
-    CONFIDENCE_VALUES,
 )
+
+# P6: set MERIDIAN_DEBUG=1 to see library-level warnings (Databricks errors, rerank failures, etc.)
+if os.environ.get("MERIDIAN_DEBUG"):
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(name)s [%(levelname)s] %(message)s",
+    )
 
 app = typer.Typer(
     name="meridian",
     help="Navigate your codebase with purpose.",
     no_args_is_help=True,
+    invoke_without_command=True,
 )
+
+
+# P2: --version flag
+def _version_callback(value: bool) -> None:
+    if value:
+        console_out = Console()
+        console_out.print(f"meridian {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: bool | None = typer.Option(
+        None,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
+) -> None:
+    """Navigate your codebase with purpose."""
 
 console = Console()
 
@@ -140,7 +172,13 @@ def _cycle_capacity_summary(specs_dir: Path, cycle_id: str) -> tuple[str, bool]:
 def status():
     """Show full feature dashboard with lifecycle states."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from meridian.databricks import latest_run_state, latest_task_states, run_state_display, task_run_display
+
+    from meridian.databricks import (
+        latest_run_state,
+        latest_task_states,
+        run_state_display,
+        task_run_display,
+    )
 
     cfg = _config()
     specs = all_specs(cfg.specs_path)
@@ -170,11 +208,13 @@ def status():
 
     if has_jobs:
         def _fetch(feat_id: str, job_id: int, task_keys: list[str] | None) -> tuple[str, str]:
+            # P5: timeout comes from .meridian.toml [databricks] status_timeout (default 8s)
+            t = cfg.databricks_status_timeout
             if task_keys:
-                states = latest_task_states(cfg, job_id, task_keys, timeout=8)
+                states = latest_task_states(cfg, job_id, task_keys, timeout=t)
                 return feat_id, task_run_display(states, task_keys)
             else:
-                state = latest_run_state(cfg, job_id, timeout=5)
+                state = latest_run_state(cfg, job_id, timeout=t)
                 return feat_id, run_state_display(state)
 
         with console.status("Fetching job statuses…"):
@@ -303,8 +343,8 @@ def status():
 @app.command()
 def new(
     idea: str = typer.Argument(..., help="Idea text to capture"),
-    goal: Optional[str] = typer.Option(None, "--goal", "-g", help="Goal ID to link (e.g. goal-01)"),
-    appetite: Optional[str] = typer.Option(
+    goal: str | None = typer.Option(None, "--goal", "-g", help="Goal ID to link (e.g. goal-01)"),
+    appetite: str | None = typer.Option(
         None, "--appetite", "-a",
         help=f"Time appetite: {' | '.join(APPETITE_VALUES)}",
     ),
@@ -318,6 +358,17 @@ def new(
         raise typer.Exit(1)
 
     cfg = _config()
+
+    # B6: warn immediately if the referenced goal doesn't exist yet
+    if goal:
+        goal_file = cfg.specs_path / "goals" / f"{goal}.md"
+        if not goal_file.exists():
+            console.print(
+                f"  [yellow]⚠[/yellow]  Goal [bold]{goal}[/bold] not found in specs/goals/ — "
+                "check the ID or run [bold]/goal new[/bold] to create it first. "
+                "The spec will still be created with this goal reference."
+            )
+
     spec_path = create_spec(cfg.specs_path, idea, goal, appetite)
     rebuild_registry(cfg.specs_path)
 
@@ -343,9 +394,9 @@ def new(
 def close(
     feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-007 or FEAT-007)"),
     status: str = typer.Option(..., "--status", "-s", help=f"Target status: {', '.join(VALID_STATUSES)}"),
-    blocked_by: Optional[str] = typer.Option(None, "--blocked-by", help="Reason or feat ID (required when status=blocked)"),
-    abandoned_reason: Optional[str] = typer.Option(None, "--abandoned-reason", help="Why this feature was killed (stored for future revive context)"),
-    confidence: Optional[str] = typer.Option(
+    blocked_by: str | None = typer.Option(None, "--blocked-by", help="Reason or feat ID (required when status=blocked)"),
+    abandoned_reason: str | None = typer.Option(None, "--abandoned-reason", help="Why this feature was killed (stored for future revive context)"),
+    confidence: str | None = typer.Option(
         None, "--confidence", "-c",
         help=f"Update problem confidence: {' | '.join(CONFIDENCE_VALUES)}",
     ),
@@ -353,6 +404,7 @@ def close(
     """Transition a feature's lifecycle state."""
     cfg = _config()
     spec_path = _find_spec(cfg, feature_id)
+    assert spec_path is not None  # _find_spec exits when silent=False
 
     if status == "blocked" and not blocked_by:
         console.print("[red]Error:[/red] --blocked-by is required when transitioning to 'blocked'.")
@@ -365,23 +417,20 @@ def close(
         )
         raise typer.Exit(1)
 
+    # B3: collect all extra fields and apply them in a single save via transition_spec
+    extra: dict = {}
+    if status == "blocked" and blocked_by:
+        extra["blocked_by"] = blocked_by
+    if status == "abandoned" and abandoned_reason:
+        extra["abandoned_reason"] = abandoned_reason
+    if confidence:
+        extra["confidence"] = confidence
+
     try:
-        data = transition_spec(spec_path, status)
+        data = transition_spec(spec_path, status, extra=extra or None)
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
-
-    if status == "blocked" and blocked_by:
-        data["blocked_by"] = blocked_by
-        save_spec(spec_path, data)
-
-    if status == "abandoned" and abandoned_reason:
-        data["abandoned_reason"] = abandoned_reason
-        save_spec(spec_path, data)
-
-    if confidence:
-        data["confidence"] = confidence
-        save_spec(spec_path, data)
 
     rebuild_registry(cfg.specs_path)
     feat_id_display = data.get("id", feature_id).upper()
@@ -408,19 +457,28 @@ def close(
 @app.command()
 def cycle(
     feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-007)"),
-    set_cycle: Optional[str] = typer.Option(None, "--set", "-s", help="Assign to a cycle (e.g. 2026-Q2)"),
+    set_cycle: str | None = typer.Option(None, "--set", "-s", help="Assign to a cycle (e.g. 2026-Q2)"),
     clear: bool = typer.Option(False, "--clear", help="Remove from any cycle"),
 ):
     """Assign or clear a feature's planning cycle (betting table)."""
     cfg = _config()
     feat_id_norm = feature_id.upper()
     spec_path = _find_spec(cfg, feature_id)
+    assert spec_path is not None  # _find_spec exits when silent=False
     data = load_spec(spec_path)
 
     if not clear and not set_cycle:
         current = data.get("cycle") or "none"
         console.print(f"  [bold]{feat_id_norm}[/bold] cycle: [blue]{current}[/blue]")
         return
+
+    # G1: warn on non-standard cycle IDs (typos like "2026Q2" instead of "2026-Q2")
+    _CYCLE_PATTERN = re.compile(r"^\d{4}-Q[1-4]$")
+    if set_cycle and not _CYCLE_PATTERN.match(set_cycle):
+        console.print(
+            f"  [dim]Note: [bold]{set_cycle}[/bold] is an unusual cycle format — "
+            "expected e.g. [bold]2026-Q2[/bold]. Any string is accepted but check for typos.[/dim]"
+        )
 
     data["cycle"] = None if clear else set_cycle
     save_spec(spec_path, data)
@@ -429,6 +487,7 @@ def cycle(
     if clear:
         console.print(f"[green]✓[/green] [bold]{feat_id_norm}[/bold] removed from cycle")
     else:
+        assert set_cycle is not None  # only reached when not clear and set_cycle was provided
         console.print(f"[green]✓[/green] [bold]{feat_id_norm}[/bold] → cycle [blue]{set_cycle}[/blue]")
         summary, overloaded = _cycle_capacity_summary(cfg.specs_path, set_cycle)
         if overloaded:
@@ -442,7 +501,7 @@ def cycle(
 
 
 # --------------------------------------------------------------------------- #
-# enrich  (stub — LanceDB/Ollama layer comes next)
+# enrich
 # --------------------------------------------------------------------------- #
 
 @app.command()
@@ -483,12 +542,12 @@ def enrich(
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Natural language search query"),
-    feat: Optional[str] = typer.Option(None, "--feat", "-f", help="Filter to a specific feature ID"),
+    feat: str | None = typer.Option(None, "--feat", "-f", help="Filter to a specific feature ID"),
     limit: int = typer.Option(5, "--limit", "-n", help="Max results to return"),
     no_rerank: bool = typer.Option(False, "--no-rerank", help="Skip BGE reranker (faster)"),
 ):
     """Semantic search across all enriched research in the vector index."""
-    from meridian.search import semantic_search, _reranker_available
+    from meridian.search import _reranker_available, semantic_search
     cfg = _config()
 
     rerank = not no_rerank
@@ -520,8 +579,9 @@ def search(
         score = r.get("rerank_score", r.get("_distance"))
         score_str = f"  [dim]score {score:.3f}[/dim]" if isinstance(score, float) else ""
         preview = r["text"][:200].replace("\n", " ").strip()
+        name = feat_display_name(cfg.specs_path, r["feat_id"])
         console.print(
-            f"[bold]{i}.[/bold] [blue]{r['feat_id']}[/blue] "
+            f"[bold]{i}.[/bold] [blue]{name}[/blue] "
             f"[dim]{r['source_name']} ·chunk {r['chunk_idx']}[/dim]{score_str}"
         )
         console.print(f"   {preview}")
@@ -536,16 +596,17 @@ def search(
 def link_job(
     feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-007 or FEAT-007)"),
     job: str = typer.Argument(..., help="Databricks job ID (numeric) or job name"),
-    task: Optional[list[str]] = typer.Option(
+    task: list[str] | None = typer.Option(
         None, "--task", "-t",
         help="Task key within the job (repeat for multiple). Omit to track the whole job.",
     ),
 ):
     """Link a Databricks job (and optionally specific tasks) to a feature spec."""
-    from meridian.databricks import resolve_job, DatabricksError
+    from meridian.databricks import DatabricksError, resolve_job
 
     cfg = _config()
     spec_path = _find_spec(cfg, feature_id)
+    assert spec_path is not None  # _find_spec exits when silent=False
 
     with console.status(f"Resolving job [bold]{job}[/bold]…"):
         try:
@@ -579,6 +640,7 @@ def unlink_job(
     """Remove the Databricks job link from a feature spec."""
     cfg = _config()
     spec_path = _find_spec(cfg, feature_id)
+    assert spec_path is not None  # _find_spec exits when silent=False
     data = load_spec(spec_path)
 
     if not data.get("scheduler"):
@@ -596,7 +658,7 @@ def unlink_job(
 
 
 # --------------------------------------------------------------------------- #
-# index  (stub — LanceDB layer)
+# index
 # --------------------------------------------------------------------------- #
 
 @app.command()
@@ -653,13 +715,50 @@ def transition(
 
 
 # --------------------------------------------------------------------------- #
+# revive  — convenience alias for transitioning abandoned → idea
+# --------------------------------------------------------------------------- #
+
+@app.command()
+def revive(
+    feature_id: str = typer.Argument(..., help="Feature ID to revive (must be abandoned)"),
+):
+    """Revive an abandoned feature — returns it to idea state.
+
+    Equivalent to `meridian close <id> --status idea` but semantically clearer.
+    The previous abandoned_reason is preserved and printed as a reminder.
+    """
+    cfg = _config()
+    spec_path = _find_spec(cfg, feature_id)
+    assert spec_path is not None  # _find_spec exits when silent=False
+
+    try:
+        data = transition_spec(spec_path, "idea")
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+    rebuild_registry(cfg.specs_path)
+    feat_id_display = str(data.get("id", feature_id)).upper()
+    console.print(f"[green]✓[/green] [bold]{feat_id_display}[/bold] revived → [bold]idea[/bold]")
+
+    if data.get("abandoned_reason"):
+        console.print(
+            f"  [dim]Previous abandonment reason: {data['abandoned_reason']}[/dim]"
+        )
+    console.print(
+        f"  Run [bold]/spec {feat_id_display.lower()}[/bold] to re-elaborate from scratch, "
+        "or [bold]/tasks[/bold] if the spec is still valid."
+    )
+
+
+# --------------------------------------------------------------------------- #
 # guide  — dynamic project workflow advisor
 # --------------------------------------------------------------------------- #
 
 @app.command()
 def guide():
     """Show what's set up in this project and what to do next."""
-    from meridian.guide import run_guide, first_action
+    from meridian.guide import first_action, run_guide
 
     cfg = _config()
     steps = run_guide(cfg)
@@ -699,6 +798,108 @@ def guide():
 
 
 # --------------------------------------------------------------------------- #
+# init  — bootstrap a new project
+# --------------------------------------------------------------------------- #
+
+@app.command(name="init")
+def init_project(
+    path: str | None = typer.Option(
+        None, "--path", "-p",
+        help="Project root to initialise (default: current directory).",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Overwrite existing files if already initialised.",
+    ),
+) -> None:
+    """Bootstrap Meridian in a new project.
+
+    Creates .meridian.toml, the specs/ directory structure, and copies the
+    Claude Code skill files into .claude/commands/.  Run once per project.
+    """
+    import shutil
+
+    import meridian as _meridian_pkg
+
+    root = Path(path).resolve() if path else Path.cwd()
+    toml_path = root / ".meridian.toml"
+    _SKILLS_DIR = Path(_meridian_pkg.__file__).parent / "skills"
+
+    if toml_path.exists() and not force:
+        console.print(
+            f"[yellow]Warning:[/yellow] {toml_path} already exists.\n"
+            "  Run with [bold]--force[/bold] to overwrite, or skip [bold]meridian init[/bold] "
+            "if this project is already set up."
+        )
+        raise typer.Exit(1)
+
+    console.print()
+    console.print(f"  Initialising Meridian in [bold]{root}[/bold]")
+    console.print()
+
+    # ── .meridian.toml ─────────────────────────────────────────────────────
+    toml_content = (
+        "[meridian]\n"
+        'specs_path     = "specs"\n'
+        'lancedb_path   = "~/.meridian/lancedb"\n'
+        'ollama_model   = "mxbai-embed-large"\n'
+        'reranker_model = "BAAI/bge-reranker-v2-m3"\n'
+        "\n"
+        "[databricks]\n"
+        'host      = ""\n'
+        'token_env = "DATABRICKS_TOKEN"\n'
+    )
+    toml_path.write_text(toml_content)
+    console.print("  [green]✓[/green] .meridian.toml")
+
+    # ── specs/ structure ───────────────────────────────────────────────────
+    specs_dir = root / "specs"
+    specs_dir.mkdir(exist_ok=True)
+    (specs_dir / "goals").mkdir(exist_ok=True)
+    (specs_dir / "decisions").mkdir(exist_ok=True)
+
+    templates_src = _SKILLS_DIR / "templates"
+    for tmpl in sorted(templates_src.glob("*.md")):
+        dest = specs_dir / tmpl.name
+        if dest.exists() and not force:
+            console.print(f"  [dim]  skip  specs/{tmpl.name} (already exists)[/dim]")
+        else:
+            shutil.copy2(tmpl, dest)
+            console.print(f"  [green]✓[/green] specs/{tmpl.name}")
+
+    console.print("  [green]✓[/green] specs/goals/")
+    console.print("  [green]✓[/green] specs/decisions/")
+
+    # ── .claude/commands/ (skill files) ────────────────────────────────────
+    claude_dir = root / ".claude" / "commands"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+
+    commands_src = _SKILLS_DIR / "commands"
+    for skill in sorted(commands_src.glob("*.md")):
+        dest = claude_dir / skill.name
+        if dest.exists() and not force:
+            console.print(f"  [dim]  skip  .claude/commands/{skill.name} (already exists)[/dim]")
+        else:
+            shutil.copy2(skill, dest)
+
+    console.print(f"  [green]✓[/green] .claude/commands/ ({len(list(commands_src.glob('*.md')))} skills)")
+
+    # ── summary ────────────────────────────────────────────────────────────
+    console.print()
+    console.print("  [bold green]Meridian initialised. ✓[/bold green]")
+    console.print()
+    console.print("  [bold]Next steps:[/bold]")
+    console.print("  1. Write your north star:         [cyan]/vision[/cyan]")
+    console.print("  2. Fill in AI context:            edit [bold]specs/STEERING.md[/bold]")
+    console.print("  3. Create a strategic goal:       [cyan]/goal new[/cyan]")
+    console.print("  4. Capture your first idea:       [cyan]/idea[/cyan]  or  "
+                  "[cyan]meridian new \"idea text\" --appetite m[/cyan]")
+    console.print()
+    console.print("  [dim]Run [bold]meridian guide[/bold] at any time to check setup status.[/dim]")
+    console.print()
+
+
+# --------------------------------------------------------------------------- #
 # help  — static manual
 # --------------------------------------------------------------------------- #
 
@@ -715,8 +916,8 @@ def help_cmd():
 
     # 1 · STRATEGY
     console.print(_box_top("1 · STRATEGY", "bold magenta"))
-    console.print(_box_row(f"[yellow]/vision[/yellow]    [dim]→[/dim]  VISION.md  [dim](north star)[/dim]"))
-    console.print(_box_row(f"[yellow]/goal new[/yellow]  [dim]→[/dim]  goals/goal-NN.md"))
+    console.print(_box_row("[yellow]/vision[/yellow]    [dim]→[/dim]  VISION.md  [dim](north star)[/dim]"))
+    console.print(_box_row("[yellow]/goal new[/yellow]  [dim]→[/dim]  goals/goal-NN.md"))
     console.print(_box_bot())
 
     console.print(_connector())
@@ -725,57 +926,57 @@ def help_cmd():
     # 2 · CAPTURE  (keep content ≤ _HELP_W-2 visible chars)
     console.print(_box_top("2 · CAPTURE", "bold blue"))
     console.print(_box_row(
-        f"[cyan]meridian new[/cyan] [dim]\"idea\" --appetite m[/dim]"
-        f"  [dim]→[/dim]  spec.md  [green](💡 idea)[/green]"
+        "[cyan]meridian new[/cyan] [dim]\"idea\" --appetite m[/dim]"
+        "  [dim]→[/dim]  spec.md  [green](💡 idea)[/green]"
     ))
     console.print(_box_bot())
 
     console.print(_connector())
-    console.print(_connector(f"[yellow]/spec[/yellow]  [yellow]/breakdown[/yellow]"))
+    console.print(_connector("[yellow]/spec[/yellow]  [yellow]/breakdown[/yellow]"))
 
     # 3 · ELABORATE
     console.print(_box_top("3 · ELABORATE", "bold yellow"))
     console.print(_box_row(
-        f"[yellow]/spec[/yellow]  [dim]→[/dim]  spec.md  [dim](requirements + ACs)[/dim]"
+        "[yellow]/spec[/yellow]  [dim]→[/dim]  spec.md  [dim](requirements + ACs)[/dim]"
     ))
     console.print(_box_row(
-        f"[yellow]/breakdown[/yellow]  [dim]→[/dim]  breakdown.md  [dim](technical design)[/dim]"
+        "[yellow]/breakdown[/yellow]  [dim]→[/dim]  breakdown.md  [dim](technical design)[/dim]"
     ))
     console.print(_box_row(
-        f"[cyan]meridian enrich[/cyan] FEAT-NNN <src>  [dim]→[/dim]  LanceDB"
+        "[cyan]meridian enrich[/cyan] FEAT-NNN <src>  [dim]→[/dim]  LanceDB"
     ))
     console.print(_box_bot())
 
     console.print(_connector())
-    console.print(_connector(f"[yellow]/tasks[/yellow]  [yellow]/plan[/yellow]"))
+    console.print(_connector("[yellow]/tasks[/yellow]  [yellow]/plan[/yellow]"))
 
     # 4 · PLAN
     console.print(_box_top("4 · PLAN", "bold cyan"))
     console.print(_box_row(
-        f"[yellow]/tasks[/yellow]  [dim]→[/dim]  tasks.md  [dim](Pre: preconditions)[/dim]  [yellow](🔨 in-progress)[/yellow]"
+        "[yellow]/tasks[/yellow]  [dim]→[/dim]  tasks.md  [dim](Pre: preconditions)[/dim]  [yellow](🔨 in-progress)[/yellow]"
     ))
     console.print(_box_row(
-        f"[yellow]/plan[/yellow]   [dim]→[/dim]  plan.md   [dim](phased strategy — optional)[/dim]"
+        "[yellow]/plan[/yellow]   [dim]→[/dim]  plan.md   [dim](phased strategy — optional)[/dim]"
     ))
     console.print(_box_bot())
 
     console.print(_connector())
-    console.print(_connector(f"[dim]build, commit…[/dim]"))
+    console.print(_connector("[dim]build, commit…[/dim]"))
 
     # 5 · BUILD
     console.print(_box_top("5 · BUILD", "bold yellow"))
     console.print(_box_row(
-        f"[yellow]/challenge[/yellow]  [yellow]/connect-dots[/yellow]  [cyan]meridian search[/cyan]  [yellow](🔨 building)[/yellow]"
+        "[yellow]/challenge[/yellow]  [yellow]/connect-dots[/yellow]  [cyan]meridian search[/cyan]  [yellow](🔨 building)[/yellow]"
     ))
     console.print(_box_bot())
 
     console.print(_connector())
-    console.print(_connector(f"[cyan]meridian close[/cyan] --status done"))
+    console.print(_connector("[cyan]meridian close[/cyan] --status done"))
 
     # 6 · SHIP
     console.print(_box_top("6 · SHIP", "bold green"))
     console.print(_box_row(
-        f"[cyan]meridian transition[/cyan] --from-merge <branch>  [green](🚀 live)[/green]"
+        "[cyan]meridian transition[/cyan] --from-merge <branch>  [green](🚀 live)[/green]"
     ))
     console.print(_box_bot())
 
@@ -853,8 +1054,12 @@ def help_cmd():
          'Rebuild REGISTRY.md + full vector index'),
         ('meridian transition --from-merge feat-007/slug',
          'Auto-transition to in-production after merge (branch must contain feat-NNN)'),
+        ('meridian revive feat-007',
+         'Revive an abandoned feature back to idea state (preserves abandoned_reason)'),
         ('meridian guide',
          '8-step project advisor: vision → steering → goals → features → specs → research → cycles → tasks'),
+        ('meridian init',
+         'Bootstrap Meridian in a new project: .meridian.toml + specs/ + .claude/commands/'),
         ('meridian help',
          'This manual'),
     ]
@@ -882,6 +1087,9 @@ def help_cmd():
         ("/connect-dots",  "Surface cross-feature overlaps and dependencies"),
         ("/challenge",     "Stress-test a feature against the vision"),
         ("/decision",      "Write an Architecture Decision Record (ADR)"),
+        ("/ask",           "RAG Q&A — answer a question from enriched research"),
+        ("/research",      "Deep synthesis of all enriched sources for a feature"),
+        ("/brief",         "One-page paper brief (≤550 words) → summaries/"),
     ]
     for cmd, desc in skills:
         skill_table.add_row(f"[cyan]{cmd}[/cyan]", desc)
