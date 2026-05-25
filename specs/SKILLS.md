@@ -1,12 +1,20 @@
 # Meridian Workflow Guide
 
-## The Stack
+## Mental Model
+
+Meridian is spec-first and AI-native: **purpose flows from vision → goal → spec → tasks → code**.
+The spec is the primary artifact. Code is derived from it.
 
 ```
-VISION.md          ← one paragraph north star
-  └── goals/       ← strategic bets, 1-3 year horizons
-        └── specs/ ← feature implementations
+specs/
+  VISION.md     ← one-paragraph north star
+  STEERING.md   ← AI context: injected into every skill
+  CYCLES.md     ← betting cycle + icebox
+  goals/        ← strategic bets (1–3 year horizons)
+  FEAT-NNN/     ← spec → breakdown → tasks → build
 ```
+
+---
 
 ## Workflow
 
@@ -14,97 +22,172 @@ VISION.md          ← one paragraph north star
 ```
 /vision
 ```
-Write or update `specs/VISION.md`. Do this once, revisit rarely.
+Write or update `specs/VISION.md`. One paragraph. Do this once, revisit rarely.
 
-### 2. Define strategic goals
+### 2. Set project AI context
+Edit `specs/STEERING.md` with:
+- Architecture constraints (rules that apply to all features)
+- Coding standards and naming conventions
+- Domain glossary (project-specific terms)
+- AI behavior notes (how Claude should work in this codebase)
+
+This file is injected into every `/spec`, `/breakdown`, `/tasks`, and `/plan` run.
+
+### 3. Define strategic goals
 ```
 /goal new
 ```
 Guided conversation. Runs 6 checks: alignment, overlap, conflict, scope, measurability, coverage.
 
-### 3. Capture an idea
+### 4. Capture an idea
 ```
 /idea
 ```
-Freeform. Maps to a goal. Writes `specs/FEAT-NNN_name/spec.md` as a draft.
+Freeform. Maps to a goal, asks for appetite, writes `specs/FEAT-NNN_name/spec.md` as an idea stub
+and creates `specs/FEAT-NNN_name/tasks.md` (empty). Or capture directly:
+```
+meridian new "idea text" --goal goal-01 --appetite m
+```
 
-### 4. Enrich with research
+**Appetite scale:**
+| Value | Time box |
+|---|---|
+| `xs` | < 1 day |
+| `s`  | 1–3 days |
+| `m`  | 1–2 weeks |
+| `l`  | 2–6 weeks |
+
+### 5. Enrich with research
 ```
 meridian enrich feat-007 ~/Downloads/paper.pdf
 meridian enrich feat-007 https://arxiv.org/abs/xxxx
-meridian enrich feat-007 ~/Downloads/screenshot.png
 ```
-Ingests source, extracts text, summarizes, indexes into LanceDB.
+Ingests source, extracts text, indexes into LanceDB vector store.
 
-### 5. Check relationships
+> **Timing is flexible:** research can happen before spec elaboration (to inform shaping)
+> or after (to validate decisions). Both patterns are valid — `/spec` reads enriched sources either way.
+
+### 6. Check relationships
 ```
 /connect-dots
 ```
 Surfaces overlaps, dependencies, and synergies with existing specs and goals.
 
-### 6. Elaborate the spec
+### 7. Elaborate the spec
 ```
-/spec
+/spec feat-007
 ```
-Turns a draft idea into a structured spec with acceptance criteria, scope, risks.
+Turns a draft idea into a structured spec: Summary, Appetite, Acceptance Criteria (Given/When/Then),
+Scope, Out of Scope, Risks, Dependencies, Open Questions. Reads STEERING.md and prompts for appetite
+if not set. Sets status → `draft`.
 
-### 7. Break it down
+### 8. Break it down
 ```
-/breakdown
+/breakdown feat-007
 ```
-Technical decomposition — components, dependencies, effort.
+Technical design: Components, Data Model, Integration Points, Test Strategy, Implementation Order.
+Writes `breakdown.md`. Does **not** transition status — that happens after `/tasks`.
 
-### 8. Plan implementation
+### 9. Generate tasks
 ```
-/plan
+/tasks feat-007
 ```
-Phased implementation plan ready to execute.
+Produces an ordered, atomic, AI-executable task list from spec + breakdown. Each task is 1–4 hours.
+Writes `tasks.md`. Sets status → `in-progress`.
 
-### 9. Track status
+### 10. Plan phases (optional)
+```
+/plan feat-007
+```
+Phased strategy for larger features (appetite `l` or multi-team). Writes `plan.md`. Optional — skip
+for xs/s appetite features where tasks.md is sufficient.
+
+### 11. Track status
 ```
 meridian status
 ```
-Dashboard: all features × lifecycle state × Databricks job health.
+Dashboard: all features × lifecycle state × task progress [N/M] × appetite × confidence × cycle × dependencies.
 
-### 10. Close a feature
+### 12. Assign to a cycle
 ```
-meridian close feat-007 --status done
+meridian cycle feat-007 --set 2026-Q2
+```
+Bet on the feature for a planning cycle. Update `specs/CYCLES.md` with the full cycle plan.
+
+### 13. Close a feature
+```
+meridian close feat-007 --status done               # prompts to review spec.md for drift
 meridian close feat-007 --status in-production
+meridian close feat-007 --status blocked --blocked-by <reason>
+meridian close feat-007 --confidence high            # update problem confidence separately
 ```
+
+---
 
 ## Lifecycle
 
 ```
-idea → draft → in-progress → done → in-production
-                    ↓                     ↑
-                 blocked            (auto on merge)
-                    ↓
-                abandoned
+💡 idea  →  📝 draft  →  🔨 in-progress  →  ✅ done  →  🚀 in-production
+                              ↕
+                           🚫 blocked
+                              ↓
+                         🗑  abandoned  →  (revive → 💡 idea)
 ```
 
-`in-production` = merged to master AND/OR scheduled in Databricks.
+| Status | Meaning | Transition trigger |
+|---|---|---|
+| `idea` | Captured stub — spec.md exists, no ACs yet | Run `/spec` |
+| `draft` | Spec elaborated; breakdown + tasks pending | Run `/breakdown` then `/tasks` |
+| `in-progress` | Tasks generated; actively being built | `meridian close --status done` |
+| `blocked` | Waiting on something external | `meridian close --status in-progress` |
+| `done` | Built, not yet released | `meridian close --status in-production` |
+| `in-production` | Live | Auto via `meridian transition --from-merge` |
+| `abandoned` | Will not be built | `meridian close --status idea` (revive) |
+
+---
+
+## Artifacts per feature
+
+| File | Produced by | Answers |
+|---|---|---|
+| `spec.md` | `/spec` | **What** — requirements, ACs, appetite, confidence |
+| `breakdown.md` | `/breakdown` | **How** — architecture, data model, components |
+| `tasks.md` | `/tasks` | **Work units** — ordered, checkable, AI-executable; each task has `Pre:` precondition |
+| `plan.md` | `/plan` | **Phases** — sequence, milestones (optional) |
+| `sources/` | `meridian enrich` | Raw research corpus |
+| `summaries/` | `/spec` | AI-generated summaries of sources |
+
+---
 
 ## All Commands
 
 | CLI | Purpose |
 |---|---|
-| `meridian status` | Full dashboard |
+| `meridian status` | Full dashboard (ID, name, goal, status [N/M], appetite, confidence, cycle, deps) |
+| `meridian new "idea" --goal g --appetite m` | Quick-capture idea |
+| `meridian close <feat> --status <s>` | Lifecycle transition (prints drift reminder at `done`) |
+| `meridian close <feat> --status blocked --blocked-by <reason>` | Block with an explicit reason (sets `blocked_at`) |
+| `meridian close <feat> --status abandoned --abandoned-reason <r>` | Abandon with reason — persists through revive |
+| `meridian close <feat> --confidence <c>` | Set problem confidence: `low \| medium \| high` |
+| `meridian cycle <feat> --set 2026-Q2` | Assign to planning cycle |
+| `meridian cycle <feat> --clear` | Remove from cycle |
 | `meridian enrich <feat> <source>` | Add research source |
-| `meridian close <feat> --status <s>` | Lifecycle transition |
-| `meridian sync-jobs` | Auto-link Databricks jobs |
-| `meridian index` | Rebuild vector index |
-| `meridian new "<idea>"` | Quick-capture idea |
+| `meridian search "query"` | Semantic search across research |
+| `meridian index` | Rebuild REGISTRY.md + vector index |
+| `meridian transition --from-merge <branch>` | Auto-transition after git merge |
+| `meridian guide` | Project setup advisor |
 
 | Slash Command | Purpose |
 |---|---|
 | `/vision` | Read/update north star |
 | `/goal new` | Create validated goal |
 | `/goal review` | Re-validate all goals |
-| `/idea` | Capture + map idea to goal |
-| `/spec` | Elaborate into structured spec |
+| `/idea` | Capture + map idea to goal (asks appetite) |
+| `/spec` | Elaborate into structured spec + ACs |
 | `/connect-dots` | Cross-feature awareness |
-| `/breakdown` | Technical decomposition |
-| `/plan` | Phased implementation plan |
-| `/roadmap` | Goals × features × gaps |
+| `/breakdown` | Technical decomposition → breakdown.md |
+| `/tasks` | Atomic task list → tasks.md (triggers in-progress) |
+| `/plan` | Phased strategy → plan.md (optional) |
+| `/roadmap` | Goals × features × gaps view |
 | `/challenge` | Stress-test against vision |
 | `/decision` | Write ADR |
