@@ -139,6 +139,9 @@ def _cycle_capacity_summary(specs_dir: Path, cycle_id: str) -> tuple[str, bool]:
 @app.command()
 def status():
     """Show full feature dashboard with lifecycle states."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from meridian.databricks import latest_run_state, latest_task_states, run_state_display, task_run_display
+
     cfg = _config()
     specs = all_specs(cfg.specs_path)
 
@@ -146,6 +149,45 @@ def status():
         console.print("[dim]No features found. Run [bold]meridian new[/bold] to capture an idea.[/dim]")
         raise typer.Exit(0)
 
+    # ── Pre-fetch Databricks job/task states ───────────────────────────────
+    # Only when at least one spec has a scheduler.job_id set.
+    # Each entry: (feat_id_upper, job_id, task_keys_or_None)
+    job_linked: list[tuple[str, int, list[str] | None]] = []
+    for s in specs:
+        sched = s.get("scheduler")
+        if isinstance(sched, dict) and sched.get("job_id"):
+            task_keys = sched.get("task_keys") or None
+            if isinstance(task_keys, list) and not task_keys:
+                task_keys = None
+            job_linked.append((
+                str(s.get("id", "?")).upper(),
+                int(sched["job_id"]),
+                task_keys,
+            ))
+
+    has_jobs = bool(job_linked)
+    job_states: dict[str, str] = {}  # feat_id_upper → display string
+
+    if has_jobs:
+        def _fetch(feat_id: str, job_id: int, task_keys: list[str] | None) -> tuple[str, str]:
+            if task_keys:
+                states = latest_task_states(cfg, job_id, task_keys, timeout=8)
+                return feat_id, task_run_display(states, task_keys)
+            else:
+                state = latest_run_state(cfg, job_id, timeout=5)
+                return feat_id, run_state_display(state)
+
+        with console.status("Fetching job statuses…"):
+            with ThreadPoolExecutor(max_workers=min(8, len(job_linked))) as pool:
+                futures = {
+                    pool.submit(_fetch, fid, jid, tkeys): fid
+                    for fid, jid, tkeys in job_linked
+                }
+                for f in as_completed(futures):
+                    fid, display = f.result()
+                    job_states[fid] = display
+
+    # ── Build table ────────────────────────────────────────────────────────
     table = Table(
         box=box.SIMPLE_HEAD,
         show_header=True,
@@ -160,6 +202,8 @@ def status():
     table.add_column("Conf", min_width=4)
     table.add_column("Cycle", min_width=8)
     table.add_column("Updated", min_width=10)
+    if has_jobs:
+        table.add_column("Job", min_width=14)
 
     counts: dict[str, int] = {}
     deps_warnings: list[str] = []
@@ -197,10 +241,10 @@ def status():
         )
         conf_display = Text(confidence_val, style=conf_style)
 
-        table.add_row(
-            feat_id, name, goal, status_text,
-            appetite_val, conf_display, cycle_val, updated,
-        )
+        row = [feat_id, name, goal, status_text, appetite_val, conf_display, cycle_val, updated]
+        if has_jobs:
+            row.append(job_states.get(feat_id, "[dim]∅[/dim]"))
+        table.add_row(*row)
 
         # Collect dependency warnings
         depends_on = s.get("depends_on") or []
@@ -485,13 +529,70 @@ def search(
 
 
 # --------------------------------------------------------------------------- #
-# sync-jobs  (stub — Databricks layer)
+# link-job  — Databricks integration
 # --------------------------------------------------------------------------- #
 
-@app.command("sync-jobs")
-def sync_jobs():
-    """Auto-link Databricks jobs to specs by name convention."""
-    console.print("[yellow]sync-jobs[/yellow] not yet implemented.")
+@app.command("link-job")
+def link_job(
+    feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-007 or FEAT-007)"),
+    job: str = typer.Argument(..., help="Databricks job ID (numeric) or job name"),
+    task: Optional[list[str]] = typer.Option(
+        None, "--task", "-t",
+        help="Task key within the job (repeat for multiple). Omit to track the whole job.",
+    ),
+):
+    """Link a Databricks job (and optionally specific tasks) to a feature spec."""
+    from meridian.databricks import resolve_job, DatabricksError
+
+    cfg = _config()
+    spec_path = _find_spec(cfg, feature_id)
+
+    with console.status(f"Resolving job [bold]{job}[/bold]…"):
+        try:
+            job_id, job_name = resolve_job(cfg, job)
+        except DatabricksError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+
+    task_keys = list(task) if task else []
+    scheduler: dict = {"job_id": job_id, "job_name": job_name}
+    if task_keys:
+        scheduler["task_keys"] = task_keys
+
+    data = load_spec(spec_path)
+    data["scheduler"] = scheduler
+    save_spec(spec_path, data)
+    rebuild_registry(cfg.specs_path)
+
+    feat_id_str = str(data.get("id", feature_id)).upper()
+    task_note = f" [dim]tasks: {', '.join(task_keys)}[/dim]" if task_keys else ""
+    console.print(
+        f"[green]✓[/green] Linked [bold]{feat_id_str}[/bold] → "
+        f"Databricks job [bold]{job_name}[/bold] [dim](id: {job_id})[/dim]{task_note}"
+    )
+
+
+@app.command("unlink-job")
+def unlink_job(
+    feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-007 or FEAT-007)"),
+):
+    """Remove the Databricks job link from a feature spec."""
+    cfg = _config()
+    spec_path = _find_spec(cfg, feature_id)
+    data = load_spec(spec_path)
+
+    if not data.get("scheduler"):
+        console.print(f"[dim]{feature_id.upper()} has no job linked.[/dim]")
+        raise typer.Exit(0)
+
+    old = data["scheduler"]
+    old_name = old.get("job_name", str(old.get("job_id", "?"))) if isinstance(old, dict) else str(old)
+    data["scheduler"] = None
+    save_spec(spec_path, data)
+    rebuild_registry(cfg.specs_path)
+
+    feat_id_str = str(data.get("id", feature_id)).upper()
+    console.print(f"[green]✓[/green] Unlinked [bold]{feat_id_str}[/bold] (was: {old_name})")
 
 
 # --------------------------------------------------------------------------- #

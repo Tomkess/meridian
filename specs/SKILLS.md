@@ -155,7 +155,7 @@ meridian close feat-007 --confidence high            # update problem confidence
 | `tasks.md` | `/tasks` | **Work units** — ordered, checkable, AI-executable; each task has `Pre:` precondition |
 | `plan.md` | `/plan` | **Phases** — sequence, milestones (optional) |
 | `sources/` | `meridian enrich` | Raw research corpus |
-| `summaries/` | `/spec` | AI-generated summaries of sources |
+| `summaries/` | `/spec`, `/brief` | AI-generated summaries; `*-brief.md` = one-page paper briefs |
 
 ---
 
@@ -191,3 +191,6 @@ meridian close feat-007 --confidence high            # update problem confidence
 | `/roadmap` | Goals × features × gaps view |
 | `/challenge` | Stress-test against vision |
 | `/decision` | Write ADR |
+| `/ask [question]` | RAG Q&A — answer a question from enriched research |
+| `/research <feat>` | Deep synthesis — what we know, gaps, next actions |
+| `/brief <feat> [source]` | One-page paper brief (≤ 550 words, A4) → summaries/ |

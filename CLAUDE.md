@@ -43,6 +43,9 @@ meridian help                                # full manual
 | `/roadmap` | Goals × features × gaps |
 | `/challenge` | Stress-test against vision |
 | `/decision` | Write ADR |
+| `/ask [question]` | RAG Q&A — answer a question from enriched research |
+| `/research <feat>` | Deep synthesis — findings, gaps, next research actions |
+| `/brief <feat> [source]` | One-page paper brief (≤ 550 words, A4) → summaries/ |
 
 ## Stack
 
