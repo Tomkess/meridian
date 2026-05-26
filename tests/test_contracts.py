@@ -134,18 +134,17 @@ def _get_help(subcmd: str | None = None) -> str:
 
 
 def _valid_subcommands() -> frozenset[str]:
-    """Parse top-level help to get the set of valid subcommands."""
-    help_text = _get_help(None)
-    # Typer formats commands as "│ <cmd>  <description>" — grab the word
-    # after "│" at the start of a line (strip whitespace).
-    cmds: set[str] = set()
-    for line in help_text.splitlines():
-        stripped = line.strip().lstrip("│").strip()
-        # Lines like "status      Show full feature…"
-        m = re.match(r'^([a-z][a-z-]+)\s{2,}', stripped)
-        if m:
-            cmds.add(m.group(1))
-    return frozenset(cmds)
+    """Return valid subcommands by introspecting the Typer app directly.
+
+    Using the Click integration avoids any dependency on help-text formatting,
+    ANSI escape codes, Rich version differences, or CI colour-forcing env vars
+    (GitHub Actions sets FORCE_COLOR=1, which makes text-based parsing brittle).
+    """
+    from typer.main import get_command
+    from meridian.cli import app as _meridian_app
+
+    click_app = get_command(_meridian_app)
+    return frozenset(click_app.commands.keys())
 
 
 def _flag_exists_for(subcmd: str, flag: str) -> bool:
