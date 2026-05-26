@@ -141,6 +141,7 @@ def _valid_subcommands() -> frozenset[str]:
     (GitHub Actions sets FORCE_COLOR=1, which makes text-based parsing brittle).
     """
     from typer.main import get_command
+
     from meridian.cli import app as _meridian_app
 
     click_app = get_command(_meridian_app)
