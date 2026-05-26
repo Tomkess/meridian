@@ -130,7 +130,12 @@ def _get_help(subcmd: str | None = None) -> str:
     env["NO_COLOR"] = "1"
     env.pop("FORCE_COLOR", None)
     r = subprocess.run(args, capture_output=True, text=True, env=env)
-    return r.stdout + r.stderr
+    text = r.stdout + r.stderr
+    # Strip any ANSI escape codes that survive despite NO_COLOR=1.
+    # GitHub Actions sets FORCE_COLOR=1; Rich/Typer may still emit codes
+    # that split flag names (e.g. "--feat" → "\x1b[1m-\x1b[0m\x1b[1m-feat\x1b[0m"),
+    # causing plain substring searches to miss them.
+    return re.sub(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
 
 
 def _valid_subcommands() -> frozenset[str]:
