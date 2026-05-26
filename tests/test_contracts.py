@@ -13,6 +13,7 @@ Run:  .venv/bin/pytest tests/test_contracts.py -v
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -115,12 +116,20 @@ def _collect_all_refs() -> list[tuple[str, str, str | None]]:
 
 @cache
 def _get_help(subcmd: str | None = None) -> str:
-    """Return the help text for ``meridian [subcmd] --help`` (cached)."""
+    """Return the help text for ``meridian [subcmd] --help`` (cached).
+
+    Runs with NO_COLOR=1 and FORCE_COLOR unset so Rich/Typer never emits
+    ANSI escape codes — GitHub Actions sets FORCE_COLOR=1 which would
+    otherwise produce colour-decorated output that breaks the regex parser.
+    """
     args = [MERIDIAN_BIN]
     if subcmd:
         args.append(subcmd)
     args.append("--help")
-    r = subprocess.run(args, capture_output=True, text=True)
+    env = os.environ.copy()
+    env["NO_COLOR"] = "1"
+    env.pop("FORCE_COLOR", None)
+    r = subprocess.run(args, capture_output=True, text=True, env=env)
     return r.stdout + r.stderr
 
 
