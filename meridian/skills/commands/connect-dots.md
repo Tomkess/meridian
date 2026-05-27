@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-4-6
+---
+
 Surface cross-feature relationships: overlaps, dependencies, and synergies.
 Combines spec-level structural analysis with semantic search across enriched research.
 

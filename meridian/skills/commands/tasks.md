@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-4-6
+---
+
 Generate an ordered, atomic task list for a feature — the AI-executable handoff before building.
 
 $ARGUMENTS is the feature ID (e.g. `feat-007`). If omitted, ask which feature to generate tasks for.

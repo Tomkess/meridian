@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-4-6
+---
+
 Write an Architecture Decision Record (ADR).
 
 $ARGUMENTS can be a title or free-form description of the decision. If empty, ask the user what decision to record.

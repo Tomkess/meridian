@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-4-6
+---
+
 Manage strategic goals in `specs/goals/`.
 
 ## Subcommands

@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-4-6
+---
+
 Capture a new idea and create a stub spec for it.
 
 The idea text comes from $ARGUMENTS. If $ARGUMENTS is empty, ask the user to describe their idea.

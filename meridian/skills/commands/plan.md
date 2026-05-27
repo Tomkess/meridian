@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-4-6
+---
+
 Generate a phased implementation plan for a feature.
 
 $ARGUMENTS is the feature ID (e.g. `feat-007`). If omitted, ask which feature to plan.
