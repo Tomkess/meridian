@@ -69,12 +69,24 @@ def chunk_text(text: str, max_words: int = 200, overlap: int = 25) -> list[str]:
 
 # ─── Ollama embeddings ────────────────────────────────────────────────────── #
 
+def _sanitize_for_embed(text: str) -> str:
+    """Sanitize text for Ollama embedding.
+
+    Ollama returns 400/500 for chunks containing certain unicode characters
+    (e.g. math symbols extracted from PDFs). Strip non-ASCII as a safe fallback
+    — semantic meaning is preserved well enough for vector similarity.
+    """
+    return text.encode("ascii", errors="ignore").decode("ascii").strip()
+
+
 def embed(text: str, model: str, base_url: str = "http://localhost:11434") -> list[float]:
     """
     Embed text via Ollama. Supports both API shapes:
       - >=0.2.0: POST /api/embed        {"model", "input"}  → {"embeddings": [[...]]}
       - <0.2.0:  POST /api/embeddings   {"model", "prompt"} → {"embedding": [...]}
     Tries the new endpoint first, falls back to legacy on 404/400.
+    If the chunk contains unicode that Ollama can't handle, retries with
+    ASCII-sanitized text.
     """
     try:
         resp = httpx.post(
@@ -82,11 +94,20 @@ def embed(text: str, model: str, base_url: str = "http://localhost:11434") -> li
             json={"model": model, "input": text},
             timeout=60,
         )
+        if resp.status_code in (400, 404, 500):
+            # Retry with sanitized text before falling back to legacy endpoint.
+            # Certain unicode characters (e.g. math symbols from PDFs) cause 400/500.
+            sanitized = _sanitize_for_embed(text)
+            resp = httpx.post(
+                f"{base_url}/api/embed",
+                json={"model": model, "input": sanitized},
+                timeout=60,
+            )
         if resp.status_code in (400, 404):
             # Fall back to legacy endpoint (<0.2.0)
             resp = httpx.post(
                 f"{base_url}/api/embeddings",
-                json={"model": model, "prompt": text},
+                json={"model": model, "prompt": _sanitize_for_embed(text)},
                 timeout=60,
             )
         resp.raise_for_status()
