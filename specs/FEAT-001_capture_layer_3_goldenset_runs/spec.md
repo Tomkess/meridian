@@ -34,3 +34,13 @@ invokes nothing). Fixture runtime artifacts are gitignored.
 review the 4 captured outputs, commit them to `tests/golden/runs/` — this un-skips
 the 22 tests in `tests/test_golden_structure.py`. Then score against
 `tests/golden/RUBRIC.md`.
+
+**Isolation finding (2026-07-14):** attempting the capture nested inside an active
+Claude Code session on this repo failed — the child skill run inherits the global
+`~/.claude` memory (which describes this repo's real FEAT-001..005) via shared
+`HOME` and trusts it over the fixture's FEAT-901..903 stubs, so `/spec feat-901`
+returns a clarifying question instead of an elaborated spec. The harness mechanics
+are sound (claude runs headless, exits 0, emits markdown); only the context
+isolation breaks under nesting. Run the capture from a clean shell, not from
+within a session already primed on this repo. Caveat documented in
+`scripts/run_golden.sh`.

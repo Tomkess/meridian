@@ -13,6 +13,13 @@
 #
 # Requires: `claude` (Claude Code CLI) in PATH, cwd = repo root.
 # Ollama must be running for skills that embed/search (e.g. /research).
+#
+# ISOLATION CAVEAT: the fixture lives inside this repo and shares your global
+# ~/.claude (memory + plugins). When run from a session that already carries
+# this repo's context/memory, the child skill run can be biased by that memory
+# (e.g. "specs only go up to FEAT-005") and misread the fixture's FEAT-901..903.
+# For a faithful capture, run this from a clean shell — not nested inside an
+# active Claude Code session on this repo — and eyeball the first output.
 
 set -euo pipefail
 
