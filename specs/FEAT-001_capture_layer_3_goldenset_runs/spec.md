@@ -68,5 +68,9 @@ the test was wrong. Loosened to accept `##` or `###`.
   `run_golden.sh` PLAN with an optional 4th prompt-override field for `/ask`'s
   free-text question.
 
-**Remaining:** score the captured outputs against `tests/golden/RUBRIC.md`
-(qualitative Layer-3 rubric pass — the structural baseline is now complete).
+**Rubric scored (2026-07-14) → `tests/golden/SCORES.md`:** verdict **PASS**. All
+must-haves ✅ except two ⚠️ partials on `/spec` (frontmatter `confidence: null`;
+idea→draft transition emitted to stdout, not visible in the captured artifact) —
+logged as non-blocking follow-ups. `/breakdown`, `/tasks`, `/ask`, `/research`
+clean. Layer-3 golden set complete: capture harness + committed baselines +
+structural gate (31/0) + qualitative scores.
