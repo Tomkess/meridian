@@ -52,12 +52,21 @@ now 19 passed / 10 skipped (was 7 / 22); full suite 333 passed / 10 skipped.
 (authoritative) emits `###` subsections under a `## Technical Breakdown` title, so
 the test was wrong. Loosened to accept `##` or `###`.
 
-**Task-less fixture added (2026-07-14):** FEAT-904 (`m`/draft — spec + breakdown,
-no `tasks.md`) added to `tests/golden/project/` so `/tasks` performs a genuine
-draft → generation instead of a no-op regeneration on FEAT-903. `run_golden.sh`
-PLAN + `TestTasksOutput` repointed to `feat-904`; a `TestFixtures` guard keeps
-FEAT-904 task-less. Capture itself still needs interactive `claude`.
+**All four skill captures landed (2026-07-14) — golden suite 31 passed / 0 skipped:**
 
-**Remaining (env-blocked):** run `./scripts/run_golden.sh tasks` to capture
-`tasks_feat-904.md` (needs interactive `claude`); `/research` + `/ask` need Ollama
-+ enriched sources; then score all outputs against `tests/golden/RUBRIC.md`.
+- `/tasks` — added task-less fixture FEAT-904 (`m`/draft, spec + breakdown, no
+  `tasks.md`) so the capture is a genuine draft → generation, not a no-op on
+  FEAT-903. Captured 11 atomic tasks (every one `Pre:` + AC refs).
+- `/spec`, `/breakdown` — captured earlier this feature (FEAT-901/902).
+- `/research`, `/ask` — needed a populated corpus. Added staged research assets
+  under `tests/golden/research_assets/<feat-id>/` (kept OUT of `sources/` so
+  `meridian enrich` imports them cleanly — enriching a file already in `sources/`
+  raises `SameFileError`). `provision()` now enriches + indexes into the
+  sandbox-local LanceDB before the run. FEAT-902 (watchfiles notes) + FEAT-903
+  (textual polling notes) give a real cross-feature connection; `/research`
+  produces findings/gaps/next-actions, `/ask` cites grounded chunks. Extended the
+  `run_golden.sh` PLAN with an optional 4th prompt-override field for `/ask`'s
+  free-text question.
+
+**Remaining:** score the captured outputs against `tests/golden/RUBRIC.md`
+(qualitative Layer-3 rubric pass — the structural baseline is now complete).
