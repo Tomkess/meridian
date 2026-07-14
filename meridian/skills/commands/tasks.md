@@ -1,5 +1,5 @@
 ---
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 ---
 
 Generate an ordered, atomic task list for a feature — the AI-executable handoff before building.

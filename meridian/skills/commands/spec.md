@@ -1,5 +1,5 @@
 ---
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 ---
 
 Elaborate a draft idea into a full structured spec.

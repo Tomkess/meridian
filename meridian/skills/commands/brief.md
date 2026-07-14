@@ -1,5 +1,5 @@
 ---
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 ---
 
 Summarise a research paper or source document as a single A4-page brief.

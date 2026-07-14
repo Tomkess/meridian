@@ -1,5 +1,5 @@
 ---
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 ---
 
 Stress-test an idea, feature, or goal against the vision and current strategy.

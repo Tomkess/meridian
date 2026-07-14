@@ -1,5 +1,5 @@
 ---
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 ---
 
 Deep research synthesis for a feature. Reads all ingested sources, runs semantic search, and
