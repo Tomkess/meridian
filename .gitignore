@@ -19,3 +19,8 @@ dist/
 # Claude local
 CLAUDE.local.md
 .claude/settings.local.json
+
+# Golden-set fixture — provisioned + captured at runtime by scripts/run_golden.sh
+tests/golden/project/.claude/
+tests/golden/project/.meridian.toml
+tests/golden/runs/*.err
