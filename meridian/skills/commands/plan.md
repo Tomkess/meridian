@@ -1,5 +1,5 @@
 ---
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 ---
 
 Generate a phased implementation plan for a feature.

@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-5
+---
+
 Generate an ordered, atomic task list for a feature — the AI-executable handoff before building.
 
 $ARGUMENTS is the feature ID (e.g. `feat-007`). If omitted, ask which feature to generate tasks for.
@@ -22,7 +26,9 @@ This skill bridges spec → build. Each task must be small enough to complete an
 4. Derive the task list:
    - Follow the **Implementation Order** from `breakdown.md` as the primary sequence.
    - Map each task to at least one Acceptance Criterion where possible.
-   - Include test/validation tasks alongside implementation tasks.
+   - Interleave test/validation tasks with the implementation they cover — place each test task
+     immediately after the task that makes it possible, not batched in a block at the end. A
+     reader should see impl → test → impl → test, so each slice is independently verifiable.
    - Flag tasks that require a decision with `[DECISION NEEDED]`.
    - Keep tasks atomic: if a task takes > 4 hours, split it.
 

@@ -38,8 +38,16 @@ def _run(skill: str, feat: str) -> str | None:
 
 
 def _has_section(text: str, heading: str) -> bool:
-    """True if a markdown ## heading with *heading* text exists."""
-    return bool(re.search(rf"^##\s+{re.escape(heading)}", text, re.MULTILINE | re.IGNORECASE))
+    """True if a markdown ## or ### heading with *heading* text exists.
+
+    Skills legitimately place sections at either level — e.g. /spec uses ##
+    sections, while /breakdown nests ### subsections under a single ##
+    "Technical Breakdown" title (see meridian/skills/commands/breakdown.md).
+    The skill template is the authoritative contract, so accept both.
+    """
+    return bool(
+        re.search(rf"^#{{2,3}}\s+{re.escape(heading)}", text, re.MULTILINE | re.IGNORECASE)
+    )
 
 
 def _sections(text: str) -> list[str]:
@@ -106,6 +114,24 @@ class TestSpecOutput:
             "Output does not mention 'confidence' — spec should set or prompt for it"
         )
 
+    def test_confidence_resolved_not_null(self, output: str) -> None:
+        # /spec must assess and set a real confidence value, never leave it null
+        # (works headlessly too — no blocking on an interactive answer).
+        fm = dict(frontmatter.loads(output).metadata)
+        assert fm.get("confidence") in {"low", "medium", "high"}, (
+            f"confidence is {fm.get('confidence')!r} — /spec must resolve it to "
+            "low/medium/high, not leave it null"
+        )
+
+    def test_idea_transitioned_to_draft(self, output: str) -> None:
+        # The idea→draft transition must be observable in the written artifact
+        # (the CLI transition rewrites frontmatter, so status is no longer idea).
+        fm = dict(frontmatter.loads(output).metadata)
+        assert fm.get("status") == "draft", (
+            f"status is {fm.get('status')!r} — /spec on an idea must transition "
+            "it to draft"
+        )
+
     def test_no_raw_tracebacks(self, output: str) -> None:
         assert "Traceback" not in output, "Output contains a Python traceback"
 
@@ -169,25 +195,30 @@ class TestBreakdownOutput:
         assert "Traceback" not in output
 
 
-# ── /tasks output: FEAT-903 (l/in-progress — regenerate) ─────────────────── #
+# ── /tasks output: FEAT-904 (m/draft — task-less, real capture) ──────────── #
 
 
 class TestTasksOutput:
-    """Structural checks for /tasks run on FEAT-903 (l/in-progress)."""
+    """Structural checks for /tasks run on FEAT-904 (m/draft, no tasks.md yet).
+
+    FEAT-903 already ships a complete tasks.md, so /tasks is a no-op there.
+    FEAT-904 is task-less (spec + breakdown, no tasks) so the capture exercises
+    a genuine draft → tasks generation.
+    """
 
     @pytest.fixture
     def output(self) -> str:
-        text = _run("tasks", "feat-903")
+        text = _run("tasks", "feat-904")
         if text is None:
             pytest.skip(
-                "No captured output. Run /tasks feat-903 and save to "
-                "tests/golden/runs/tasks_feat-903.md"
+                "No captured output. Run /tasks feat-904 and save to "
+                "tests/golden/runs/tasks_feat-904.md"
             )
         return text
 
     def test_tasks_present(self, output: str) -> None:
         tasks = _tasks(output)
-        assert len(tasks) >= 5, f"Only {len(tasks)} tasks found (expected ≥ 5 for appetite `l`)"
+        assert len(tasks) >= 5, f"Only {len(tasks)} tasks found (expected ≥ 5 for appetite `m`)"
 
     def test_every_task_has_pre_line(self, output: str) -> None:
         tasks = _tasks(output)
@@ -333,4 +364,16 @@ class TestFixtures:
         assert len(pre_list) >= len(task_list), (
             "Fixture tasks.md must have a Pre: line for every task "
             "(golden set depends on this as a correct baseline)"
+        )
+
+    def test_feat_904_is_task_less_draft(self) -> None:
+        # The /tasks capture target: a draft with spec + breakdown but no
+        # tasks.md, so /tasks genuinely generates (not regenerates) a list.
+        feat = PROJECT / "FEAT-904_m_ready_for_tasks"
+        fm = dict(frontmatter.loads((feat / "spec.md").read_text()).metadata)
+        assert fm["status"] == "draft"
+        assert fm["appetite"] == "m"
+        assert (feat / "breakdown.md").exists(), "breakdown.md required for /tasks"
+        assert not (feat / "tasks.md").exists(), (
+            "FEAT-904 must stay task-less so /tasks capture is a real generation"
         )

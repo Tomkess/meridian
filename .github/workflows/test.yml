@@ -35,6 +35,21 @@ jobs:
       - name: Type-check (mypy)
         run: mypy meridian/
 
+      # ── Skill-consistency: bundled ↔ .claude/commands structural drift ──── #
+      # Exercises the FEAT-003 `--compare` CLI directly (model-free). The
+      # runtime `--skill` twice-over mode needs a live model and runs
+      # interactively, not in CI.
+
+      - name: Skill structural drift (skill_consistency --compare)
+        run: |
+          rc=0
+          for f in meridian/skills/commands/*.md; do
+            b="$(basename "$f")"
+            python scripts/skill_consistency.py --compare "$f" ".claude/commands/$b" \
+              || { echo "::error file=.claude/commands/$b::structural drift vs bundled skill"; rc=1; }
+          done
+          exit $rc
+
       # ── Layer 2: behavioral tests (includes contract check) ─────────────── #
 
       - name: Test

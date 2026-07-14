@@ -539,6 +539,46 @@ class TestInit:
         assert r.returncode == 0
 
 
+# ── meridian install ───────────────────────────────────────────────────────── #
+
+
+class TestInstall:
+    def test_project_installs_namespaced(self, tmp_path: Path) -> None:
+        r = run(["install", "--project", "--path", str(tmp_path)], tmp_path)
+        assert r.returncode == 0
+        dest = tmp_path / ".claude" / "commands" / "meridian"
+        assert dest.is_dir()
+        skills = list(dest.glob("*.md"))
+        assert len(skills) == 14, f"Expected 14 skill files, got {len(skills)}"
+
+    def test_reports_namespaced_invocation(self, tmp_path: Path) -> None:
+        r = run(["install", "--project", "--path", str(tmp_path)], tmp_path)
+        assert "/meridian:spec" in r.stdout
+
+    def test_rerun_skips_without_force(self, tmp_path: Path) -> None:
+        run(["install", "--project", "--path", str(tmp_path)], tmp_path)
+        r = run(["install", "--project", "--path", str(tmp_path)], tmp_path)
+        assert r.returncode == 0
+        assert "skipped" in r.stdout
+        assert "0 skill" in r.stdout
+
+    def test_force_overwrites(self, tmp_path: Path) -> None:
+        run(["install", "--project", "--path", str(tmp_path)], tmp_path)
+        skill = tmp_path / ".claude" / "commands" / "meridian" / "spec.md"
+        skill.write_text("corrupted")
+        run(["install", "--project", "--path", str(tmp_path), "--force"], tmp_path)
+        assert skill.read_text() != "corrupted"
+
+    def test_global_installs_into_home(self, tmp_path: Path) -> None:
+        # Redirect HOME so the real ~/.claude is never touched.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        r = run(["install"], tmp_path, env_extra={"HOME": str(fake_home)})
+        assert r.returncode == 0
+        dest = fake_home / ".claude" / "commands" / "meridian"
+        assert len(list(dest.glob("*.md"))) == 14
+
+
 # ── meridian guide ───────────────────────────────────────────────────────── #
 
 

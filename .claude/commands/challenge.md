@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-5
+---
+
 Stress-test an idea, feature, or goal against the vision and current strategy.
 
 $ARGUMENTS can be a feature ID, a goal ID, or free-form text describing the idea to challenge.
