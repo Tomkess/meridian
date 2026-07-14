@@ -1,5 +1,9 @@
+import hashlib
 import re
 import sys
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -171,6 +175,40 @@ def create_spec(
 
 
 # --------------------------------------------------------------------------- #
+# File locking — serialize concurrent read-modify-write on a spec
+# --------------------------------------------------------------------------- #
+
+@contextmanager
+def spec_lock(spec_path: Path) -> Iterator[None]:
+    """Advisory exclusive lock serializing read-modify-write on one spec.
+
+    Without it, two agents transitioning the same feature concurrently can
+    interleave load → modify → save and silently drop one update (last writer
+    wins). This matters under parallel multi-agent / worktree workflows; a
+    single interactive user never contends.
+
+    Uses ``fcntl.flock`` on POSIX. The lock file lives in the system temp dir
+    keyed by the spec's absolute path — no repo pollution, and distinct specs
+    never block each other. On platforms without ``fcntl`` (e.g. Windows) this
+    degrades to a no-op, which is acceptable for the single-user case.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - non-POSIX fallback
+        yield
+        return
+
+    key = hashlib.sha1(str(spec_path.resolve()).encode()).hexdigest()[:16]
+    lock_path = Path(tempfile.gettempdir()) / f"meridian-spec-{key}.lock"
+    with open(lock_path, "w") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+# --------------------------------------------------------------------------- #
 # Lifecycle transition
 # --------------------------------------------------------------------------- #
 
@@ -184,37 +222,41 @@ def transition_spec(
     `extra` lets callers attach additional field updates (e.g. blocked_by,
     abandoned_reason, confidence) that are applied before the single write,
     avoiding the double-save anti-pattern (B3).
+
+    The whole read-modify-write runs under ``spec_lock`` so concurrent
+    transitions of the same feature serialize instead of racing (FEAT-004).
     """
     if new_status not in VALID_STATUSES:
         raise ValueError(f"Invalid status '{new_status}'. Valid: {', '.join(VALID_STATUSES)}")
 
-    data = load_spec(spec_path)
-    current = data.get("status", "idea")
+    with spec_lock(spec_path):
+        data = load_spec(spec_path)
+        current = data.get("status", "idea")
 
-    allowed = VALID_TRANSITIONS.get(current, ())
-    if new_status not in allowed:
-        raise ValueError(
-            f"Cannot transition '{current}' → '{new_status}'. "
-            f"Allowed from '{current}': {', '.join(allowed) or 'none'}"
-        )
+        allowed = VALID_TRANSITIONS.get(current, ())
+        if new_status not in allowed:
+            raise ValueError(
+                f"Cannot transition '{current}' → '{new_status}'. "
+                f"Allowed from '{current}': {', '.join(allowed) or 'none'}"
+            )
 
-    data["status"] = new_status
-    if new_status == "blocked":
-        data["blocked_at"] = _today()
-    else:
-        data["blocked_by"] = None   # clear stale reason when leaving blocked
-        data["blocked_at"] = None   # clear staleness timestamp when unblocked
-    if new_status == "abandoned":
-        data["abandoned_at"] = _today()
-    if new_status == "idea":  # revive — clear date but preserve reason as historical note
-        data["abandoned_at"] = None
+        data["status"] = new_status
+        if new_status == "blocked":
+            data["blocked_at"] = _today()
+        else:
+            data["blocked_by"] = None   # clear stale reason when leaving blocked
+            data["blocked_at"] = None   # clear staleness timestamp when unblocked
+        if new_status == "abandoned":
+            data["abandoned_at"] = _today()
+        if new_status == "idea":  # revive — clear date but preserve reason as historical note
+            data["abandoned_at"] = None
 
-    # Apply caller-supplied extra fields after status logic so they take precedence
-    if extra:
-        data.update(extra)
+        # Apply caller-supplied extra fields after status logic so they take precedence
+        if extra:
+            data.update(extra)
 
-    save_spec(spec_path, data)
-    return data
+        save_spec(spec_path, data)
+        return data
 
 
 # --------------------------------------------------------------------------- #
