@@ -900,6 +900,91 @@ def init_project(
 
 
 # --------------------------------------------------------------------------- #
+# install  — distribute skill files (global or project), namespaced
+# --------------------------------------------------------------------------- #
+
+@app.command(name="install")
+def install_skills(
+    project: bool = typer.Option(
+        False, "--project",
+        help="Install into ./.claude/commands/meridian/ instead of the global "
+             "~/.claude/commands/meridian/.",
+    ),
+    path: str | None = typer.Option(
+        None, "--path", "-p",
+        help="Project root (used with --project). Default: current directory.",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Overwrite skill files that already exist.",
+    ),
+) -> None:
+    """Install Meridian's Claude Code skills, namespaced as /meridian:<name>.
+
+    By default installs globally into ~/.claude/commands/meridian/ so the skills
+    are available in every project.  Run again after upgrading the package
+    (add --force) to refresh.  Use --project to pin skills to one repository.
+    """
+    import shutil
+
+    import meridian as _meridian_pkg
+
+    commands_src = Path(_meridian_pkg.__file__).parent / "skills" / "commands"
+
+    if project:
+        root = Path(path).resolve() if path else Path.cwd()
+        dest = root / ".claude" / "commands" / "meridian"
+        scope_label = f"project ({root})"
+    else:
+        if path:
+            console.print(
+                "[yellow]Note:[/yellow] --path is ignored without --project; "
+                "installing globally."
+            )
+        dest = Path.home() / ".claude" / "commands" / "meridian"
+        scope_label = "global (~/.claude/commands/meridian/)"
+
+    dest.mkdir(parents=True, exist_ok=True)
+
+    console.print()
+    console.print(f"  Installing Meridian skills — [bold]{scope_label}[/bold]")
+    console.print()
+
+    copied = 0
+    skipped = 0
+    for skill in sorted(commands_src.glob("*.md")):
+        target = dest / skill.name
+        if target.exists() and not force:
+            console.print(f"  [dim]  skip  {skill.stem} (already installed)[/dim]")
+            skipped += 1
+        else:
+            shutil.copy2(skill, target)
+            copied += 1
+
+    console.print()
+    console.print(
+        f"  [green]✓[/green] {copied} skill(s) installed"
+        + (f", {skipped} skipped" if skipped else "")
+        + f" → [bold]{dest}[/bold]"
+    )
+    if skipped and not force:
+        console.print(
+            "  [dim]Re-run with [bold]--force[/bold] to overwrite the skipped files "
+            "(e.g. after upgrading meridian).[/dim]"
+        )
+    console.print()
+    console.print(
+        "  Invoke them in Claude Code as [cyan]/meridian:spec[/cyan], "
+        "[cyan]/meridian:idea[/cyan], [cyan]/meridian:tasks[/cyan], …"
+    )
+    console.print(
+        "  [dim]Skills reason; the [bold]meridian[/bold] CLI runs ops. "
+        "Both must be present.[/dim]"
+    )
+    console.print()
+
+
+# --------------------------------------------------------------------------- #
 # help  — static manual
 # --------------------------------------------------------------------------- #
 
@@ -1060,6 +1145,8 @@ def help_cmd():
          '8-step project advisor: vision → steering → goals → features → specs → research → cycles → tasks'),
         ('meridian init',
          'Bootstrap Meridian in a new project: .meridian.toml + specs/ + .claude/commands/'),
+        ('meridian install',
+         'Install skills globally (~/.claude/commands/meridian/) as /meridian:<name>; --project to pin, --force to refresh'),
         ('meridian help',
          'This manual'),
     ]
