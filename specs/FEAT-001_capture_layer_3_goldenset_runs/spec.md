@@ -52,7 +52,12 @@ now 19 passed / 10 skipped (was 7 / 22); full suite 333 passed / 10 skipped.
 (authoritative) emits `###` subsections under a `## Technical Breakdown` title, so
 the test was wrong. Loosened to accept `##` or `###`.
 
-**Remaining:** `/tasks` — fixture FEAT-903 already ships a complete `tasks.md`, so
-`/tasks` is a no-op there; needs a task-less fixture feature for a real capture (the
-current TestFixtures checks already cover FEAT-903's tasks). `/research` + `/ask` —
-need Ollama running + enriched sources; still skipped.
+**Task-less fixture added (2026-07-14):** FEAT-904 (`m`/draft — spec + breakdown,
+no `tasks.md`) added to `tests/golden/project/` so `/tasks` performs a genuine
+draft → generation instead of a no-op regeneration on FEAT-903. `run_golden.sh`
+PLAN + `TestTasksOutput` repointed to `feat-904`; a `TestFixtures` guard keeps
+FEAT-904 task-less. Capture itself still needs interactive `claude`.
+
+**Remaining (env-blocked):** run `./scripts/run_golden.sh tasks` to capture
+`tasks_feat-904.md` (needs interactive `claude`); `/research` + `/ask` need Ollama
++ enriched sources; then score all outputs against `tests/golden/RUBRIC.md`.

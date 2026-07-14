@@ -35,7 +35,7 @@ DRY_RUN="${DRY_RUN:-}"
 PLAN=(
   "spec:feat-901:specs/FEAT-901_xs_idea/spec.md"
   "breakdown:feat-902:specs/FEAT-902_m_draft/breakdown.md"
-  "tasks:feat-903:specs/FEAT-903_l_in_progress/tasks.md"
+  "tasks:feat-904:specs/FEAT-904_m_ready_for_tasks/tasks.md"
   "research:feat-902:STDOUT"
 )
 
