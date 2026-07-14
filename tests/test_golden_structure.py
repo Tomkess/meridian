@@ -38,8 +38,16 @@ def _run(skill: str, feat: str) -> str | None:
 
 
 def _has_section(text: str, heading: str) -> bool:
-    """True if a markdown ## heading with *heading* text exists."""
-    return bool(re.search(rf"^##\s+{re.escape(heading)}", text, re.MULTILINE | re.IGNORECASE))
+    """True if a markdown ## or ### heading with *heading* text exists.
+
+    Skills legitimately place sections at either level — e.g. /spec uses ##
+    sections, while /breakdown nests ### subsections under a single ##
+    "Technical Breakdown" title (see meridian/skills/commands/breakdown.md).
+    The skill template is the authoritative contract, so accept both.
+    """
+    return bool(
+        re.search(rf"^#{{2,3}}\s+{re.escape(heading)}", text, re.MULTILINE | re.IGNORECASE)
+    )
 
 
 def _sections(text: str) -> list[str]:
