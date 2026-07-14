@@ -114,6 +114,24 @@ class TestSpecOutput:
             "Output does not mention 'confidence' — spec should set or prompt for it"
         )
 
+    def test_confidence_resolved_not_null(self, output: str) -> None:
+        # /spec must assess and set a real confidence value, never leave it null
+        # (works headlessly too — no blocking on an interactive answer).
+        fm = dict(frontmatter.loads(output).metadata)
+        assert fm.get("confidence") in {"low", "medium", "high"}, (
+            f"confidence is {fm.get('confidence')!r} — /spec must resolve it to "
+            "low/medium/high, not leave it null"
+        )
+
+    def test_idea_transitioned_to_draft(self, output: str) -> None:
+        # The idea→draft transition must be observable in the written artifact
+        # (the CLI transition rewrites frontmatter, so status is no longer idea).
+        fm = dict(frontmatter.loads(output).metadata)
+        assert fm.get("status") == "draft", (
+            f"status is {fm.get('status')!r} — /spec on an idea must transition "
+            "it to draft"
+        )
+
     def test_no_raw_tracebacks(self, output: str) -> None:
         assert "Traceback" not in output, "Output contains a Python traceback"
 

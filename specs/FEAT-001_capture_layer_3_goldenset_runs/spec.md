@@ -15,7 +15,7 @@ name: 'Capture Layer 3 golden-set runs: run scripts/run_golden.sh and commit out
   to tests/golden/runs/ to un-skip the 22 structural regression tests'
 scheduler: null
 sources: []
-status: in-progress
+status: done
 tags: []
 updated: '2026-07-14'
 ---

@@ -10,9 +10,10 @@ structurally gated by `tests/test_golden_structure.py` (31 passed / 0 skipped).
 
 ## Verdict: **PASS**
 
-All must-haves ✅ except two ⚠️ partials on `/spec` (confidence + status), neither a
-hard ❌. No skill prompt blocks release; the two `/spec` items are logged as
-opportunistic fixes below.
+All must-haves ✅. The two earlier `/spec` partials (confidence `null`; idea→draft
+transition not visible in the artifact) and the `/tasks` should-have (test tasks
+batched at the end) were fixed in the skill prompts and re-captured — see
+"Resolved follow-ups" below.
 
 ---
 
@@ -22,8 +23,8 @@ opportunistic fixes below.
 |---|---|---|
 | 1 | All 8 body sections present | ✅ (+ Related Research) |
 | 2 | ≥ 2 ACs in Given/When/Then | ✅ (5 ACs, all G/W/T) |
-| 3 | `confidence` set in frontmatter | ⚠️ present but `null` — skill did not elicit a value (acceptable for xs, ideally prompted) |
-| 4 | `status` → `draft` (or instruction) | ⚠️ file still `status: idea` — the idea→draft CLI transition is emitted to stdout, not reflected in the captured artifact |
+| 3 | `confidence` set in frontmatter | ✅ `high` — /spec now self-assesses and sets it (never `null`), guarded by `test_confidence_resolved_not_null` |
+| 4 | `status` → `draft` (or instruction) | ✅ `draft` — /spec runs the CLI transition without blocking; visible in the artifact, guarded by `test_idea_transitioned_to_draft` |
 | S1 | Spike suggestion if low-conf m/l | n/a (xs) |
 | S2 | `depends_on`/`enables` if found | ✅ correctly reports "none identified" (empty corpus) |
 
@@ -53,7 +54,7 @@ FEAT-904 is the task-less target so this is a genuine generation.
 | 3 | Tasks reference an AC where applicable | ✅ (task 10 correctly = `AC: none`, supports a risk) |
 | 4 | No task > 4h / split | ✅ |
 | S1 | `[DECISION NEEDED]` on open questions | ✅ (task 1 flags schema_version int-vs-semver) |
-| S2 | Test tasks interspersed | ⚠️ mostly (task 5 mid; tests cluster 8–11) |
+| S2 | Test tasks interspersed | ✅ /tasks prompt now interleaves impl → test → impl → test (re-captured: 13 tasks alternating) |
 
 ### `/ask` — FEAT-902 ("key risks?") → [ask_feat-902.md](runs/ask_feat-902.md)
 
@@ -74,12 +75,16 @@ FEAT-904 is the task-less target so this is a genuine generation.
 
 ---
 
-## Follow-ups (opportunistic, non-blocking)
+## Resolved follow-ups (2026-07-14)
 
-1. `/spec` leaves `confidence: null` — consider having the skill elicit or default a
-   confidence value during idea→draft elaboration.
-2. The `/spec` idea→draft transition isn't visible in the captured `spec.md` artifact
-   (it runs via the CLI to stdout). Either capture stdout for `/spec` too, or assert
-   the transition a different way, so the rubric's must-have #4 is observable.
-3. `/tasks` batches most test tasks at the end (S2). Minor — could nudge the prompt to
-   interleave test tasks with their implementation tasks.
+1. **`/spec` `confidence: null`** → fixed. Step 8 now self-assesses confidence and sets
+   it (defaulting to `medium` when unsure) instead of ending the turn on an interactive
+   question the headless run can't answer. Guarded by `test_confidence_resolved_not_null`.
+2. **`/spec` idea→draft transition not observable** → fixed by the same change: because
+   step 8 no longer blocks, step 9's `meridian close … --status draft` now runs, so the
+   captured `spec.md` shows `status: draft`. Guarded by `test_idea_transitioned_to_draft`.
+   (Root cause: in `claude -p` the model can't tell no user is present, so an interactive
+   "what's your confidence?" question silently ended the run before the transition.)
+3. **`/tasks` batched test tasks at the end** → fixed. The derive step now instructs
+   interleaving each test task immediately after the implementation it covers. Re-captured
+   `tasks_feat-904.md` alternates impl → test across all 13 tasks.

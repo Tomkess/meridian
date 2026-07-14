@@ -24,19 +24,22 @@ $ARGUMENTS is the feature ID (e.g. `feat-007` or `FEAT-007`). If omitted, ask th
 7. Produce the elaborated spec body using the structure below. Write it directly into `spec.md`
    (preserve frontmatter, replace body). Also write a brief summary of each source file to
    `specs/FEAT-NNN_*/summaries/<source-stem>.md`.
-8. Ask the user to rate their confidence in the problem definition before finalising:
-   > "How well do you understand the problem this feature is solving?
-   > `low` = vague / still exploring  ·  `medium` = rough shape clear  ·  `high` = well-defined"
+8. Establish confidence in the problem definition. **Assess it yourself** from the elaboration
+   and available research, and set it — do **not** end your turn waiting for an answer (the skill
+   must work headlessly as well as interactively, and it cannot tell which mode it is in):
+   - `low` = problem still vague / exploring  ·  `medium` = rough shape clear  ·  `high` =
+     well-defined, testable criteria, few unknowns. Default to `medium` when genuinely unsure.
+   State the value you chose with one line of reasoning, and how to override it:
+   > "Confidence set to `<value>` — <one-line reason>. Override with
+   > `meridian close FEAT-NNN --confidence <low|medium|high>` if you'd rate it differently."
 
-   **If the user says `low` and appetite is `m` or `l`**, pause and suggest a spike before continuing:
-   > "Confidence is low on a medium/large feature. Consider scoping an `xs` spike first:
+   **If your assessed confidence is `low` and appetite is `m` or `l`**, also recommend a spike
+   and record it under Open Questions (do not block on it):
+   > "Confidence is low on a medium/large feature — consider an `xs` spike first:
    > `meridian new \"spike: <question to answer>\" --appetite xs`
-   > A spike is a time-boxed investigation (< 1 day) that produces a decision, not shippable code.
-   > Run `/spec` on it once captured — it will be quick to elaborate.
-   > Want to proceed with this spec anyway, or create a spike first?"
-   Wait for the user's decision before continuing.
+   > A spike is a time-boxed investigation (< 1 day) that produces a decision, not shippable code."
 
-   Set `confidence` in frontmatter to the user's answer regardless.
+   Never leave `confidence` as `null`.
 9. Transition lifecycle state and update remaining fields:
    - If current `status` is `idea`, transition via CLI (rebuilds the registry):
      ```

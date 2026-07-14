@@ -15,7 +15,7 @@ name: 'Skill-consistency regression harness: run a skill twice and diff output s
   (sections + frontmatter) to catch ambiguous prompts, now that model routing changed'
 scheduler: null
 sources: []
-status: in-progress
+status: done
 tags: []
 updated: '2026-07-14'
 ---
