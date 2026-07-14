@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-5
+---
+
 Summarise a research paper or source document as a single A4-page brief.
 Strict constraint: the output must fit one A4 page — no more than 550 words.
 

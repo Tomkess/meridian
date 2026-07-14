@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-5
+---
+
 Deep research synthesis for a feature. Reads all ingested sources, runs semantic search, and
 produces a structured research brief: what we know, what we don't, and what to do next.
 
@@ -33,7 +37,19 @@ feature to research.
 
 5. Read any existing summaries in `specs/FEAT-NNN_*/summaries/` to avoid repeating work.
 
-6. Synthesise the output below from the spec, source files, and search results.
+6. Spawn a synthesis agent to produce the research brief:
+   Use the Agent tool with `model: "opus"`. Pass it a prompt containing:
+   - The full spec content (frontmatter + body)
+   - All semantic search results from steps 3–4
+   - All source file contents read in step 4
+   - All existing summaries from step 5
+   - The output format below (copy it verbatim into the prompt)
+
+   Instruct the agent: *"You are a research synthesis expert. Using only the provided context,
+   produce a Research Summary following the exact output format. Do not invent findings not
+   present in the sources. Cite every claim."*
+
+   Write the agent's output directly to the conversation — do not summarise or alter it.
 
 ## Output format
 

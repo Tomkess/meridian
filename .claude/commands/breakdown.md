@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-5
+---
+
 Produce a technical decomposition of a feature.
 
 $ARGUMENTS is the feature ID (e.g. `feat-007`). If omitted, ask which feature to break down.
@@ -13,6 +17,21 @@ It is distinct from `spec.md` (which answers *what* to build) and `tasks.md` (wh
 3. Read specs for any features listed in `depends_on` to understand what's already available.
 4. If `specs/STEERING.md` exists, read it — apply its architectural constraints and standards
    to all design decisions below.
+
+5. Spawn a design agent to produce the breakdown:
+   Use the Agent tool with `model: "opus"`. Pass it a prompt containing:
+   - The full spec content (Summary, Acceptance Criteria, Appetite, Dependencies sections)
+   - All summaries from step 2
+   - All dependency spec contents from step 3
+   - All constraints and standards from STEERING.md (step 4)
+   - The breakdown structure below (copy it verbatim into the prompt)
+
+   Instruct the agent: *"You are a senior software architect. Using only the provided context,
+   produce a complete Technical Breakdown following the exact structure. Apply all STEERING.md
+   constraints. Be concrete — name actual components, fields, and integration points. Do not
+   leave placeholder text."*
+
+   Write the agent's output to `specs/FEAT-NNN_*/breakdown.md`.
 
 Produce a breakdown and write it to `specs/FEAT-NNN_*/breakdown.md`. Use this structure:
 

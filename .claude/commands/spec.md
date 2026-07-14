@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-5
+---
+
 Elaborate a draft idea into a full structured spec.
 
 $ARGUMENTS is the feature ID (e.g. `feat-007` or `FEAT-007`). If omitted, ask the user which feature to elaborate.

@@ -1,3 +1,7 @@
+---
+model: claude-sonnet-5
+---
+
 Answer a question using semantic search across all enriched research.
 
 $ARGUMENTS is the question to answer, with an optional `--feat FEAT-NNN` flag to scope the search

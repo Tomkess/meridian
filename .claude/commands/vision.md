@@ -1,3 +1,7 @@
+---
+model: claude-haiku-4-5-20251001
+---
+
 Read `specs/VISION.md` and display it.
 
 If $ARGUMENTS is empty: show the current vision and ask the user if they want to update it.
