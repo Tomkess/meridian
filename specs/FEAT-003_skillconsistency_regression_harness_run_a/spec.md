@@ -40,6 +40,20 @@ in-repo `.claude/commands/` copies — two ways:
   `scripts/skill_consistency.py --compare` CLI over every skill pair, exercising
   the FEAT-003 entry point + exit-code contract and emitting `::error` on drift.
 
-**Remaining (needs interactive `claude`):** run the `--skill` twice-over mode
-against real skill runs to catch prompt ambiguity after prompt edits — model-gated,
-runs interactively, not in CI.
+**Runtime `--skill` mode finished + verified end-to-end (2026-07-14):**
+- Now **isolated** like `run_golden.sh` — each run copies the fixture to a temp
+  sandbox with a clean `$HOME`, so twice-over runs never mutate the tracked
+  fixture (verified: `git status` clean after a live run).
+- Now **compares the written artifact** (spec.md / breakdown.md / tasks.md /
+  plan.md) rather than the stdout transcript — file-writing skills print only a
+  prose summary with no `##` headings, which made the diff a trivial no-op.
+- `_normalize_heading` now strips the free-form `— FEAT-NNN: <name>` title tail
+  (the LLM phrases the feature name differently each run), so the diff compares
+  real section structure, not title wording. 2 new unit tests (13 total).
+- Live check: `python scripts/skill_consistency.py --skill breakdown --feat
+  feat-902` ran two real captures → **consistent**, exit 0. (An earlier run,
+  before the title-tail fix, correctly flagged the title-wording drift — proof
+  the harness detects genuine non-determinism.)
+
+FEAT-003 complete: `--compare` drift guard in CI + unit-tested engine + isolated,
+artifact-based `--skill` runtime mode (model-gated; run locally/manually).

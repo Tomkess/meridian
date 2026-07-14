@@ -22,7 +22,9 @@ drops straight into CI or a pre-commit hook.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,10 +43,14 @@ def _normalize_heading(text: str) -> str:
 
     Wording is allowed to vary; we compare the semantic heading. Any inline
     numbering ("1. Overview") is stripped so re-ordered numbering doesn't read
-    as a structural change on its own.
+    as a structural change on its own. Document titles carry a free-form
+    feature-name tail ("Technical Breakdown — FEAT-902: <name the LLM chose>")
+    that legitimately varies run-to-run; we strip from the "— FEAT-NNN:" marker
+    so the stable title stem is compared, not the phrasing of the name.
     """
     text = re.sub(r"\s+", " ", text).strip().lower()
     text = re.sub(r"^\d+[.)]\s*", "", text)  # leading "1. " / "2) "
+    text = re.sub(r"\s*[—–-]+\s*feat-\d+\b.*$", "", text)  # title name tail
     return text.rstrip(":.").strip()
 
 
@@ -145,24 +151,87 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PROJECT = REPO_ROOT / "tests" / "golden" / "project"
 
 
+def _provision_sandbox() -> tuple[Path, Path]:
+    """Copy the fixture into a temp sandbox with a clean HOME and return both.
+
+    Mirrors scripts/run_golden.sh: skill file-writes land in the throwaway copy
+    (never the tracked fixture), and a clean HOME keeps the global ~/.claude
+    memory from biasing the run. Caller is responsible for cleanup.
+    """
+    sandbox = Path(tempfile.mkdtemp(prefix="skill-consistency-sandbox-"))
+    clean_home = Path(tempfile.mkdtemp(prefix="skill-consistency-home-"))
+    shutil.copytree(FIXTURE_PROJECT / "specs", sandbox / "specs")
+    toml = FIXTURE_PROJECT / ".meridian.toml"
+    if toml.exists():
+        shutil.copy2(toml, sandbox / ".meridian.toml")
+    dest_cmds = sandbox / ".claude" / "commands"
+    dest_cmds.mkdir(parents=True)
+    for skill_file in (REPO_ROOT / "meridian" / "skills" / "commands").glob("*.md"):
+        shutil.copy2(skill_file, dest_cmds / skill_file.name)
+    return sandbox, clean_home
+
+
+# Which file each skill writes, relative to the feature dir. Skills not listed
+# here (e.g. /research, /ask) print to stdout, so we compare the transcript.
+# NOTE: the structural diff is only meaningful for skills whose output actually
+# carries frontmatter/## headings — the file-writers below, or stdout skills
+# that print structured markdown. /research and /ask additionally need an
+# enriched corpus (use scripts/run_golden.sh, which enriches, for those).
+_ARTIFACT_BY_SKILL = {
+    "spec": "spec.md",
+    "breakdown": "breakdown.md",
+    "tasks": "tasks.md",
+    "plan": "plan.md",
+}
+
+
 def _run_skill_headless(skill: str, feat: str) -> str:
-    """Invoke a skill twice-over via the Claude Code CLI; return stdout."""
-    cmd = [
-        "claude",
-        "-p",
-        f"/{skill} {feat}",
-        "--output-format",
-        "text",
-        "--dangerously-skip-permissions",
-        "--add-dir",
-        str(FIXTURE_PROJECT),
-    ]
-    result = subprocess.run(
-        cmd, cwd=FIXTURE_PROJECT, capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"claude run failed:\n{result.stderr}")
-    return result.stdout
+    """Invoke a skill once via the Claude Code CLI in an isolated sandbox.
+
+    Runs against a throwaway fixture copy with a clean HOME so it never mutates
+    the tracked fixture — safe to call twice-over for the consistency diff. For
+    file-writing skills, returns the written artifact (the structured markdown
+    the diff is meant to compare); otherwise returns stdout (the transcript).
+    """
+    sandbox, clean_home = _provision_sandbox()
+    try:
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(clean_home),
+            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+        }
+        cmd = [
+            "claude",
+            "-p",
+            f"/{skill} {feat}",
+            "--output-format",
+            "text",
+            "--dangerously-skip-permissions",
+        ]
+        result = subprocess.run(
+            cmd, cwd=sandbox, capture_output=True, text=True, env=env,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"claude run failed:\n{result.stderr}")
+
+        artifact = _ARTIFACT_BY_SKILL.get(skill)
+        if artifact:
+            feat_norm = feat.upper() if feat.lower().startswith("feat-") else feat
+            matches = sorted((sandbox / "specs").glob(f"{feat_norm}_*"))
+            if not matches:
+                raise RuntimeError(f"no feature dir for {feat} in sandbox")
+            written = matches[0] / artifact
+            if not written.exists():
+                raise RuntimeError(
+                    f"/{skill} did not write {artifact} for {feat} "
+                    f"(stdout:\n{result.stdout[:500]})"
+                )
+            return written.read_text()
+        return result.stdout
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+        shutil.rmtree(clean_home, ignore_errors=True)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -141,6 +141,19 @@ class TestExtractStructure:
         assert s.frontmatter_keys == {"id", "nested"}
         assert "child" not in s.frontmatter_keys
 
+    def test_title_feature_name_tail_is_stripped(self) -> None:
+        # Two runs title the same doc with different free-form feature names;
+        # only the stem before "— FEAT-NNN:" is structural.
+        a = extract_structure("## Technical Breakdown — FEAT-902: Auto-transition watcher\n")
+        b = extract_structure("## Technical Breakdown — FEAT-902: Add `meridian watch`\n")
+        assert a.sections == ("technical breakdown",)
+        assert a.sections == b.sections
+
+    def test_non_title_hyphenated_heading_is_preserved(self) -> None:
+        # A real section heading with a hyphen but no feat-id tail is untouched.
+        s = extract_structure("## Cross-feature connections\n")
+        assert s.sections == ("cross-feature connections",)
+
 
 # ── compare_texts ────────────────────────────────────────────────────────── #
 
