@@ -67,7 +67,7 @@ meridian init
 This creates:
 - `.meridian.toml` — config file
 - `specs/` — feature directory with `VISION.md`, `STEERING.md`, `CYCLES.md`, `SKILLS.md`, `REGISTRY.md`, `goals/`, `decisions/`
-- `.claude/commands/` — 14 Claude Code skill files
+- `.claude/commands/meridian/` — 14 Claude Code skill files (namespaced as `/meridian:<name>`)
 
 ### 3. Set up Ollama (for research features)
 
@@ -134,7 +134,7 @@ stateDiagram-v2
 
 | Command | What it does |
 |---|---|
-| `meridian init` | Bootstrap Meridian: .meridian.toml + specs/ + .claude/commands/ |
+| `meridian init` | Bootstrap Meridian: .meridian.toml + specs/ + .claude/commands/meridian/ |
 | `meridian status` | Dashboard: all features × lifecycle × task progress [N/M] |
 | `meridian new "idea text"` | Allocate FEAT-NNN, write stub spec, update REGISTRY |
 | `meridian new "idea" --goal goal-01 --appetite m` | Capture with goal link and appetite |

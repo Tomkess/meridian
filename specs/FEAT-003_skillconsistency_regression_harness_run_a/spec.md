@@ -33,7 +33,7 @@ flagged. CLI: `--compare a.md b.md` (exit 0 consistent / 1 drift) and
 
 **Wired into CI (2026-07-14, model-free):** the `--compare` engine now guards
 structural drift between the bundled skills (`meridian/skills/commands/`) and the
-in-repo `.claude/commands/` copies — two ways:
+in-repo `.claude/commands/meridian/` copies — two ways:
 - `tests/test_skill_sync.py` (16 tests) reuses `compare_texts` as a library, so
   the invariant is enforced in the existing `pytest` step and locally.
 - A dedicated CI step in `.github/workflows/test.yml` runs the actual

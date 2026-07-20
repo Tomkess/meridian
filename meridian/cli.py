@@ -815,7 +815,7 @@ def init_project(
     """Bootstrap Meridian in a new project.
 
     Creates .meridian.toml, the specs/ directory structure, and copies the
-    Claude Code skill files into .claude/commands/.  Run once per project.
+    Claude Code skill files into .claude/commands/meridian/.  Run once per project.
     """
     import shutil
 
@@ -870,29 +870,29 @@ def init_project(
     console.print("  [green]✓[/green] specs/goals/")
     console.print("  [green]✓[/green] specs/decisions/")
 
-    # ── .claude/commands/ (skill files) ────────────────────────────────────
-    claude_dir = root / ".claude" / "commands"
+    # ── .claude/commands/meridian/ (skill files, namespaced) ───────────────
+    claude_dir = root / ".claude" / "commands" / "meridian"
     claude_dir.mkdir(parents=True, exist_ok=True)
 
     commands_src = _SKILLS_DIR / "commands"
     for skill in sorted(commands_src.glob("*.md")):
         dest = claude_dir / skill.name
         if dest.exists() and not force:
-            console.print(f"  [dim]  skip  .claude/commands/{skill.name} (already exists)[/dim]")
+            console.print(f"  [dim]  skip  .claude/commands/meridian/{skill.name} (already exists)[/dim]")
         else:
             shutil.copy2(skill, dest)
 
-    console.print(f"  [green]✓[/green] .claude/commands/ ({len(list(commands_src.glob('*.md')))} skills)")
+    console.print(f"  [green]✓[/green] .claude/commands/meridian/ ({len(list(commands_src.glob('*.md')))} skills)")
 
     # ── summary ────────────────────────────────────────────────────────────
     console.print()
     console.print("  [bold green]Meridian initialised. ✓[/bold green]")
     console.print()
     console.print("  [bold]Next steps:[/bold]")
-    console.print("  1. Write your north star:         [cyan]/vision[/cyan]")
+    console.print("  1. Write your north star:         [cyan]/meridian:vision[/cyan]")
     console.print("  2. Fill in AI context:            edit [bold]specs/STEERING.md[/bold]")
-    console.print("  3. Create a strategic goal:       [cyan]/goal new[/cyan]")
-    console.print("  4. Capture your first idea:       [cyan]/idea[/cyan]  or  "
+    console.print("  3. Create a strategic goal:       [cyan]/meridian:goal new[/cyan]")
+    console.print("  4. Capture your first idea:       [cyan]/meridian:idea[/cyan]  or  "
                   "[cyan]meridian new \"idea text\" --appetite m[/cyan]")
     console.print()
     console.print("  [dim]Run [bold]meridian guide[/bold] at any time to check setup status.[/dim]")
@@ -1144,7 +1144,7 @@ def help_cmd():
         ('meridian guide',
          '8-step project advisor: vision → steering → goals → features → specs → research → cycles → tasks'),
         ('meridian init',
-         'Bootstrap Meridian in a new project: .meridian.toml + specs/ + .claude/commands/'),
+         'Bootstrap Meridian in a new project: .meridian.toml + specs/ + .claude/commands/meridian/'),
         ('meridian install',
          'Install skills globally (~/.claude/commands/meridian/) as /meridian:<name>; --project to pin, --force to refresh'),
         ('meridian help',

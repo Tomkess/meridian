@@ -42,7 +42,7 @@ PLAN=(
   "breakdown:feat-902:specs/FEAT-902_m_draft/breakdown.md"
   "tasks:feat-904:specs/FEAT-904_m_ready_for_tasks/tasks.md"
   "research:feat-902:STDOUT"
-  "ask:feat-902:STDOUT:/ask what are the key risks for feat-902? --feat feat-902"
+  "ask:feat-902:STDOUT:/meridian:ask what are the key risks for feat-902? --feat feat-902"
 )
 
 mkdir -p "$RUNS_DIR"
@@ -63,8 +63,8 @@ provision() {
   CLEAN_HOME="$(mktemp -d "${TMPDIR:-/tmp}/meridian-home.XXXXXX")"
   cp -R "$FIXTURE_SRC/specs" "$SANDBOX/"
   [[ -f "$FIXTURE_SRC/.meridian.toml" ]] && cp "$FIXTURE_SRC/.meridian.toml" "$SANDBOX/"
-  mkdir -p "$SANDBOX/.claude/commands"
-  cp "$BUNDLED_SKILLS"/*.md "$SANDBOX/.claude/commands/"
+  mkdir -p "$SANDBOX/.claude/commands/meridian"
+  cp "$BUNDLED_SKILLS"/*.md "$SANDBOX/.claude/commands/meridian/"
 
   # /research and /ask need a populated vector corpus (they halt / find nothing
   # otherwise). Enrich the staged research assets into their feature, then index.
@@ -93,7 +93,7 @@ provision() {
 
 capture() {
   local skill="$1" feat="$2" artifact="$3"
-  local prompt="${4:-/$skill $feat}"
+  local prompt="${4:-/meridian:$skill $feat}"
   local outfile="$RUNS_DIR/${skill}_${feat}.md"
   [[ -n "$FILTER" && "$FILTER" != "$skill" ]] && return 0
 
