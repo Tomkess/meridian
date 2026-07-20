@@ -138,12 +138,12 @@ class TestVersion:
         r = run(["--version"], proj)
         assert r.returncode == 0
         assert "meridian" in r.stdout
-        assert "0.1.0" in r.stdout
+        assert "0.2.0" in r.stdout
 
     def test_version_short_flag(self, proj: Path) -> None:
         r = run(["-V"], proj)
         assert r.returncode == 0
-        assert "0.1.0" in r.stdout
+        assert "0.2.0" in r.stdout
 
     def test_help_exits_zero(self, proj: Path) -> None:
         r = run(["--help"], proj)
