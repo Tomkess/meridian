@@ -24,3 +24,6 @@ CLAUDE.local.md
 # scripts/run_golden.sh (the fixture's .meridian.toml is tracked, not generated).
 tests/golden/project/.claude/
 tests/golden/runs/*.err
+
+# Transient build artifacts (setuptools/uv)
+build/
