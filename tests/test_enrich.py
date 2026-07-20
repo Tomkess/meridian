@@ -7,10 +7,35 @@ import pytest
 
 from meridian.enrich import (
     _is_url,
+    _require_lancedb_compat,
     _source_filename,
     chunk_text,
     embed,
 )
+
+# ── LanceDB Python-version guard ─────────────────────────────────────────── #
+
+
+class TestLanceDBCompatGuard:
+    """Guard converts the Python-3.14 LanceDB segfault into a clear error."""
+
+    def test_raises_on_314(self):
+        with pytest.raises(RuntimeError, match="3.14"):
+            _require_lancedb_compat((3, 14, 0))
+
+    def test_raises_on_315(self):
+        with pytest.raises(RuntimeError, match="LanceDB"):
+            _require_lancedb_compat((3, 15, 2))
+
+    def test_noop_on_313(self):
+        _require_lancedb_compat((3, 13, 7))  # must not raise
+
+    def test_noop_on_311(self):
+        _require_lancedb_compat((3, 11, 0))  # must not raise
+
+    def test_uses_live_interpreter_by_default(self):
+        # Suite runs on a supported Python (<3.14) → default call must not raise
+        _require_lancedb_compat()
 
 # ── _is_url ──────────────────────────────────────────────────────────────── #
 

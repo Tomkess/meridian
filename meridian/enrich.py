@@ -2,12 +2,35 @@
 Research ingestion pipeline: source → extract → chunk → embed → LanceDB.
 """
 import shutil
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
 
 from meridian.config import MeridianConfig
+
+
+def _require_lancedb_compat(version_info: tuple[int, ...] | None = None) -> None:
+    """Fail loudly on Python versions where LanceDB's native extension segfaults.
+
+    lancedb 0.19.0's compiled extension hard-crashes (SIGSEGV, no traceback) on
+    Python 3.14. Raise a clear RuntimeError *before* any native call instead —
+    the CLI catches it and the rest of Meridian keeps working. Lift the ceiling
+    (here and the requires-python cap in pyproject.toml) once lancedb ships a
+    3.14-compatible wheel.
+
+    ``version_info`` is injectable for testing; it defaults to the running
+    interpreter's ``sys.version_info``.
+    """
+    vi = version_info if version_info is not None else sys.version_info
+    if vi[:2] >= (3, 14):
+        raise RuntimeError(
+            f"The vector index (LanceDB) does not support Python "
+            f"{vi[0]}.{vi[1]} — its native extension segfaults. Reinstall "
+            f"Meridian on Python 3.13, e.g. "
+            f"`uv tool install meridian --python 3.13 --force`."
+        )
 
 # ─── Text extraction ──────────────────────────────────────────────────────── #
 
@@ -133,6 +156,7 @@ def embed(text: str, model: str, base_url: str = "http://localhost:11434") -> li
 # ─── LanceDB storage ──────────────────────────────────────────────────────── #
 
 def _open_table(lancedb_path: Path, dim: int):
+    _require_lancedb_compat()
     import lancedb
     import pyarrow as pa
 
@@ -191,6 +215,7 @@ def search_similar(
     feat_id_filter: str | None = None,
 ) -> list[dict]:
     """ANN search, optionally filtered to a single feature."""
+    _require_lancedb_compat()
     import lancedb
 
     if not lancedb_path.exists():
@@ -279,6 +304,7 @@ def enrich_feature(cfg: MeridianConfig, feat_id: str, source: str) -> dict:
 
 def reindex_all(cfg: MeridianConfig) -> dict:
     """Drop and rebuild the entire LanceDB index from all sources."""
+    _require_lancedb_compat()
     import lancedb
 
     if cfg.lancedb_path.exists():
