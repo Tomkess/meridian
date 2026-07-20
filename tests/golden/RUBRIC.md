@@ -113,7 +113,7 @@ Run `/spec` on FEAT-901 twice in separate Claude sessions. Compare outputs:
 
 ## Regression gate
 
-When a skill prompt file (`.claude/commands/*.md`) changes:
+When a skill prompt file (`.claude/commands/meridian/*.md`) changes:
 1. Re-run the golden set for the changed skill
 2. Diff output structure against the committed runs in `tests/golden/runs/`
 3. Structural changes (sections added/removed, fields changed) must be deliberate

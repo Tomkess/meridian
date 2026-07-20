@@ -491,7 +491,7 @@ class TestInit:
 
     def test_creates_claude_commands(self, tmp_path: Path) -> None:
         run(["init", "--path", str(tmp_path)], tmp_path)
-        commands = tmp_path / ".claude" / "commands"
+        commands = tmp_path / ".claude" / "commands" / "meridian"
         assert commands.is_dir()
         skills = list(commands.glob("*.md"))
         assert len(skills) == 14, f"Expected 14 skill files, got {len(skills)}"
@@ -508,7 +508,7 @@ class TestInit:
     def test_prints_next_steps(self, tmp_path: Path) -> None:
         r = run(["init", "--path", str(tmp_path)], tmp_path)
         assert "Next steps" in r.stdout
-        assert "/vision" in r.stdout
+        assert "/meridian:vision" in r.stdout
 
     def test_refuses_double_init_without_force(self, tmp_path: Path) -> None:
         run(["init", "--path", str(tmp_path)], tmp_path)

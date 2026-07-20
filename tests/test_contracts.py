@@ -43,7 +43,7 @@ MERIDIAN_BIN = _find_binary()
 # ── source files to scan ─────────────────────────────────────────────────── #
 
 REPO_ROOT = Path(__file__).parents[1]
-COMMANDS_DIR = REPO_ROOT / ".claude" / "commands"
+COMMANDS_DIR = REPO_ROOT / ".claude" / "commands" / "meridian"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 
 # Words that follow "meridian" but are NOT subcommands (prose / meta text)
@@ -94,7 +94,7 @@ def _collect_all_refs() -> list[tuple[str, str, str | None]]:
     """
     Returns ``[(source_file_name, subcommand, flag_or_None), ...]``.
 
-    Scans all ``.claude/commands/*.md`` files plus ``CLAUDE.md``.
+    Scans all ``.claude/commands/meridian/*.md`` files plus ``CLAUDE.md``.
     """
     all_refs: list[tuple[str, str, str | None]] = []
     sources: list[Path] = list(COMMANDS_DIR.glob("*.md")) + [CLAUDE_MD]
