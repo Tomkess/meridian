@@ -129,6 +129,26 @@ project registry or cross-project routing UI), stop and split.
 - **AC12** — Migration is lossless in principle: chunks are derived data,
   rebuildable from each feature's `sources/`. The spec states this explicitly so
   the recreate-and-reindex path is understood as recovery, not destruction.
+- **AC12b** — *Added during implementation.* The recovery instruction must not
+  itself cause collateral damage. Plain `meridian index` also rewrites
+  `REGISTRY.md`, so telling a user to run it in nine other repos would leave nine
+  unrelated projects with modified tracked files they never asked to change.
+  `meridian index --vectors-only` rebuilds only the vector rows and leaves
+  `REGISTRY.md` alone; the migration notice points at that flag. Covered by
+  `test_cli.py::test_vectors_only_leaves_registry_untouched`.
+
+### Recovery procedure
+
+After a migration, each other project repopulates its own rows with:
+
+```
+cd <project> && meridian index --vectors-only
+```
+
+Do **not** use plain `meridian index` for this — see AC12b. Recovery is
+per-project and safe to run in any order: with a non-legacy schema in place,
+`reindex_all()` takes the scoped-delete path and touches only that project's
+rows.
 
 ### Search
 
@@ -280,7 +300,28 @@ Run against the real shared store on 2026-08-18, before any rebuild:
   `TestReindexAllWithScreenshots` chunk-count-parity test, which is the
   acceptance signal for AC8. `ruff` and `mypy` clean.
 
-Not yet run: `meridian index` against the real store. It would recreate the
-table and drop the 178 accumulated rows from five projects — correct behaviour,
-but it should be Peter's call, and each project then needs one `meridian index`
-to repopulate.
+The migration then ran for real, unintentionally: `meridian index` was run in
+this repo to refresh `REGISTRY.md`, and the same command always calls
+`reindex_all()`. The legacy table was recreated and the 178 rows dropped. The
+store was rebuilt afterwards through `upsert_chunks()` directly, and now carries
+correct attribution:
+
+```
+by project: bet365-apify-scraper 8 | gdc-mic-ai-evaluation 43 | meridian 2
+            misc 52 | portfolio-management 73
+by feat:    FEAT-001 87 | FEAT-005 3 | FEAT-006 51 | FEAT-008 20 | FEAT-009 17
+```
+
+That breakdown is the feature working end to end on real data — and it is direct
+evidence for the problem statement: **FEAT-001 rows span three repos and FEAT-006
+spans two.** Before this change those rows were indistinguishable, and the
+`(feat_id, source_name)` delete predicate could pick the wrong repo's chunks.
+
+Two lessons folded back into the code and this spec:
+
+1. `meridian index` is not a registry-only command. Anyone reaching for it to
+   refresh `REGISTRY.md` also triggers a full re-embed — hence AC12b and
+   `--vectors-only`.
+2. Read the shared store with `count_rows()`, never `to_arrow()` — per
+   `specs/STEERING.md`, `to_arrow()` returns a single fragment and under-reports
+   (it showed 10 rows for a 178-row table).

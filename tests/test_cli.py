@@ -624,6 +624,25 @@ class TestIndex:
         # Registry may be rebuilt by the CLI regardless of embedding step
         # Just assert no crash
 
+    def test_vectors_only_leaves_registry_untouched(self, proj_with_idea: Path) -> None:
+        """FEAT-007: recovering another repo's chunks must not dirty its git tree.
+
+        `meridian index` rewrites REGISTRY.md, so telling users to run it in
+        nine other repos to repopulate the shared store would modify tracked
+        files nobody asked to change.
+        """
+        registry = proj_with_idea / "specs" / "REGISTRY.md"
+        run(["index"], proj_with_idea)
+        before = registry.read_text() if registry.exists() else None
+
+        registry.write_text("SENTINEL — must not be regenerated\n")
+        r = run(["index", "--vectors-only"], proj_with_idea)
+
+        assert "Traceback" not in r.stdout + r.stderr
+        assert registry.read_text() == "SENTINEL — must not be regenerated\n"
+        assert "REGISTRY.md rebuilt" not in r.stdout
+        assert before is None or before  # registry was writable to begin with
+
 
 # ── enrich: screenshots (FEAT-006) ───────────────────────────────────────── #
 

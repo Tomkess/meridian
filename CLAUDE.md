@@ -28,7 +28,8 @@ meridian enrich <feat-id> <image> --note-file <path>          # notes (+ visual 
 meridian enrich <feat-id> <image> --note "..." --vision       # add local Ollama caption (fallback)
 meridian search "query"                      # semantic search across this project's research
 meridian search "query" --all-projects       # widen to every project sharing the index
-meridian index                               # rebuild vector index
+meridian index                               # rebuild vector index + REGISTRY.md
+meridian index --vectors-only                # vectors only — leaves REGISTRY.md untouched
 meridian transition --from-merge <branch>    # auto-transition after git merge (branch: feat-NNN/slug)
 meridian guide                               # project setup advisor
 meridian help                                # full manual

@@ -829,12 +829,18 @@ def unlink_job(
 # --------------------------------------------------------------------------- #
 
 @app.command()
-def index():
+def index(
+    vectors_only: bool = typer.Option(
+        False, "--vectors-only",
+        help="Rebuild only this project's vectors; leave REGISTRY.md untouched",
+    ),
+):
     """Rebuild the LanceDB vector index and refresh REGISTRY.md."""
     from meridian.enrich import reindex_all
     cfg = _config()
-    rebuild_registry(cfg.specs_path)
-    console.print("[green]✓[/green] REGISTRY.md rebuilt.")
+    if not vectors_only:
+        rebuild_registry(cfg.specs_path)
+        console.print("[green]✓[/green] REGISTRY.md rebuilt.")
     with console.status("Re-embedding all sources…"):
         try:
             result = reindex_all(cfg)
@@ -847,12 +853,13 @@ def index():
                 console.print(
                     "[yellow]⚠[/yellow]  The old index had no project column and was "
                     "recreated. Other Meridian projects' chunks were dropped with it — "
-                    "run [bold]meridian index[/bold] once in each to repopulate "
-                    "[dim](sources/ is the source of truth, so nothing is lost)[/dim]."
+                    "run [bold]meridian index --vectors-only[/bold] once in each to "
+                    "repopulate [dim](sources/ is the source of truth, so nothing is "
+                    "lost; --vectors-only leaves their REGISTRY.md untouched)[/dim]."
                 )
         except RuntimeError as e:
             console.print(f"[yellow]Warning:[/yellow] {e}")
-            console.print("REGISTRY.md was refreshed but vector index was not rebuilt.")
+            console.print("Vector index was not rebuilt.")
 
 
 # --------------------------------------------------------------------------- #
@@ -1325,7 +1332,9 @@ def help_cmd():
         ('meridian search "drift detection" --all-projects',
          'Widen the search to every Meridian project sharing the index'),
         ('meridian index',
-         'Rebuild REGISTRY.md + full vector index'),
+         "Rebuild REGISTRY.md + this project's vector index"),
+        ('meridian index --vectors-only',
+         'Rebuild vectors only — leaves REGISTRY.md untouched (safe in other repos)'),
         ('meridian transition --from-merge feat-007/slug',
          'Auto-transition to in-production after merge (branch must contain feat-NNN)'),
         ('meridian revive feat-007',
