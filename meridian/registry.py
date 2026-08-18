@@ -93,8 +93,9 @@ def register(slug: str, path: Path, purpose: str = "") -> ProjectEntry:
 
 def _write(entries: list[ProjectEntry]) -> None:
     lines = [
-        "# Meridian project registry — written by `meridian init` / `meridian install`.",
-        "# Used by `meridian inbox` to route captured ideas into the right repo.",
+        "# Meridian project registry — add a repo with `meridian register`",
+        "# (`meridian init` registers automatically). Read by `meridian status --all`",
+        "# and `meridian install --all`. Safe to edit by hand.",
         "",
     ]
     for e in entries:
