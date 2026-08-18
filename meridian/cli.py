@@ -170,6 +170,33 @@ def _cycle_capacity_summary(specs_dir: Path, cycle_id: str) -> tuple[str, bool]:
 # status
 # --------------------------------------------------------------------------- #
 
+def _print_inbox_nudge() -> None:
+    """Surface the global inbox count on the per-project dashboard (FEAT-008).
+
+    Deliberate leak of global state into a project view: an invisible inbox is
+    an unemptied one. Kept to a single dim line, and silent when empty so it
+    costs nothing in the common case. Never fails the dashboard.
+    """
+    try:
+        from meridian.inbox import list_captures
+
+        captures = list_captures()
+    except Exception:  # pragma: no cover - defensive
+        return
+
+    if not captures:
+        return
+
+    oldest = min(c.created for c in captures)
+    age_days = (datetime.now() - oldest).days
+    age = f", oldest {age_days}d old" if age_days >= 1 else ""
+    plural = "idea" if len(captures) == 1 else "ideas"
+    console.print(
+        f"  [yellow]📥[/yellow] [dim]{len(captures)} {plural} pending triage{age} — "
+        f"run [bold]meridian inbox[/bold][/dim]"
+    )
+
+
 @app.command()
 def status():
     """Show full feature dashboard with lifecycle states."""
@@ -184,6 +211,7 @@ def status():
 
     cfg = _config()
     specs = all_specs(cfg.specs_path)
+    _print_inbox_nudge()
 
     if not specs:
         console.print("[dim]No features found. Run [bold]meridian new[/bold] to capture an idea.[/dim]")

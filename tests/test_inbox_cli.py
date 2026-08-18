@@ -244,6 +244,37 @@ class TestNoAutoFile:
         assert not sorted(repo.glob("specs/FEAT-*/spec.md"))
 
 
+class TestStatusNudge:
+    def test_status_shows_pending_count(self, tmp_path: Path, home: Path) -> None:
+        repo = _make_repo(tmp_path, "target-repo")
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        run(["capture", "one idea"], scratch, home)
+        run(["capture", "another idea"], scratch, home)
+
+        r = run(["status"], repo, home)
+
+        assert "2 ideas pending triage" in r.stdout
+
+    def test_status_silent_when_inbox_empty(self, tmp_path: Path, home: Path) -> None:
+        """Costs nothing in the common case."""
+        repo = _make_repo(tmp_path, "target-repo")
+
+        r = run(["status"], repo, home)
+
+        assert "pending triage" not in r.stdout
+
+    def test_singular_wording(self, tmp_path: Path, home: Path) -> None:
+        repo = _make_repo(tmp_path, "target-repo")
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        run(["capture", "single idea"], scratch, home)
+
+        r = run(["status"], repo, home)
+
+        assert "1 idea pending triage" in r.stdout
+
+
 class TestProjectsCommand:
     def test_lists_registered(self, tmp_path: Path, home: Path) -> None:
         repo = _make_repo(tmp_path, "listed-repo")

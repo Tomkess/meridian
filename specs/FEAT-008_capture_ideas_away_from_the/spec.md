@@ -16,7 +16,7 @@ name: Capture ideas away from the PC into a global inbox and triage them into th
   right project
 scheduler: null
 sources: []
-status: in-progress
+status: done
 tags: []
 updated: '2026-08-18'
 ---
@@ -96,13 +96,20 @@ a directory of markdown files means anything that can write a file already works
   shared LanceDB index across all projects (`project=None`), aggregating hit
   scores per project. Top 3 candidates are shown, never just the winner.
 - **AC12** — When the index has no rows for a project, that project can still be
-  suggested from its registry `purpose` line, embedded at registry-write time.
-  A brand-new project with no research must not be permanently unroutable.
+  suggested from its registry `purpose` line. A brand-new project with no research
+  must not be permanently unroutable. *Built differently:* the purpose is embedded
+  at triage time, not at registry-write time as written here. Embedding on write
+  would make `meridian init` depend on Ollama being up, which would be a bad trade
+  for a setup command.
 - **AC13** — An explicit `project` (frontmatter or `#hashtag`) bypasses semantic
   routing entirely and is shown as `explicit`, not as a score.
-- **AC14** — `meridian inbox route <id> --project <slug>` runs the equivalent of
+- **AC14** — `meridian inbox route <id> <slug>` runs the equivalent of
   `meridian new` in that project's repo and moves the capture file to
   `~/.meridian/inbox/.processed/`. The file is moved, never deleted.
+  *Built differently:* the target is a positional argument, not `--project`.
+  `test_contracts.py` checks documented flags against `meridian <subcmd> --help`,
+  and a flag on a Typer sub-command is not visible there — so `--project` would
+  have been undocumentable. Positional is also shorter to type.
 - **AC15** — Routing writes the capture's full text into the new spec's body, so
   nothing is lost to summarisation.
 - **AC16** — `meridian inbox drop <id>` moves a capture to
@@ -122,11 +129,14 @@ a directory of markdown files means anything that can write a file already works
 
 ## Scope
 
+- `meridian/home.py` — machine-global paths and `search_context()`. *Built as a new
+  module rather than in `config.py` as first scoped:* `config.py` exists to load a
+  repo's `.meridian.toml`, and capture must never import that path.
 - `meridian/inbox.py` — capture file read/write, frontmatter and hashtag parsing.
 - `meridian/registry.py` — `~/.meridian/projects.toml` read/write/validate.
-- `meridian/cli.py` — `capture`, `inbox`, `projects` commands.
-- `meridian/config.py` — locate the global Meridian home independently of any repo.
-- Tests, `CLAUDE.md`, `meridian help`.
+- `meridian/routing.py` — suggestion engine.
+- `meridian/cli.py` — `capture`, `inbox`, `projects` commands, plus the `status` nudge.
+- Tests, `CLAUDE.md`, `meridian help`, `specs/STEERING.md`.
 
 ## Out of Scope
 
