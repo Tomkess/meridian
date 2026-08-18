@@ -388,7 +388,11 @@ def status(
         )
         conf_display = Text(confidence_val, style=conf_style)
 
-        row = [feat_id, name, goal, status_text, appetite_val, conf_display, cycle_val, updated]
+        # Typed as the union Rich accepts: the list mixes str and Text, and an
+        # untyped list[object] is not assignable to add_row's parameter.
+        row: list[str | Text] = [
+            feat_id, name, goal, status_text, appetite_val, conf_display, cycle_val, updated,
+        ]
         if has_jobs:
             row.append(job_states.get(feat_id, "[dim]∅[/dim]"))
         table.add_row(*row)

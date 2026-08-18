@@ -17,7 +17,7 @@ def _find_binary() -> str:
     found = shutil.which("meridian")
     if found:
         return found
-    raise RuntimeError("meridian binary not found. Run: uv pip install -e '.[dev]'")
+    raise RuntimeError("meridian binary not found. Run: uv sync")
 
 
 MERIDIAN_BIN = _find_binary()

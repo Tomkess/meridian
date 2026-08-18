@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meridian"
-dynamic = ["version"]
+version = "0.2.0"
 # Upper-bounded: lancedb 0.19.0's native extension segfaults (SIGSEGV) on
 # Python 3.14. Lift the <3.14 cap once lancedb ships a 3.14-compatible wheel.
 requires-python = ">=3.11,<3.14"
@@ -21,7 +21,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# A real user-facing option — `pip install meridian[rerank]` — so it stays an extra.
 rerank = ["sentence-transformers>=2.7"]
+
+[dependency-groups]
+# PEP 735. Dev tooling is not part of the installable package, so it does not
+# belong in optional-dependencies: `uv sync` installs this by default and
+# `uv build` ignores it.
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -64,8 +70,3 @@ warn_return_any = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
-
-[tool.setuptools.dynamic]
-# Single source of truth: meridian/__init__.py. Duplicating the version in
-# pyproject.toml guarantees the two drift — they already had.
-version = {attr = "meridian.__version__"}
