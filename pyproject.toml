@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meridian"
-version = "0.2.0"
+dynamic = ["version"]
 # Upper-bounded: lancedb 0.19.0's native extension segfaults (SIGSEGV) on
 # Python 3.14. Lift the <3.14 cap once lancedb ships a 3.14-compatible wheel.
 requires-python = ">=3.11,<3.14"
@@ -64,3 +64,8 @@ warn_return_any = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+
+[tool.setuptools.dynamic]
+# Single source of truth: meridian/__init__.py. Duplicating the version in
+# pyproject.toml guarantees the two drift — they already had.
+version = {attr = "meridian.__version__"}

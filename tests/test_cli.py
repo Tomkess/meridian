@@ -68,6 +68,17 @@ def _first_spec(project: Path) -> Path:
     return matches[0]
 
 
+def _package_version() -> str:
+    """Read the version from the package, not a literal.
+
+    A hardcoded version string turns every release into a test edit, which is
+    exactly the friction the release flow exists to remove.
+    """
+    from meridian import __version__
+
+    return __version__
+
+
 def _bundled_skill_count() -> int:
     """How many skills ship in the package — derived, so adding one cannot rot a test."""
     from meridian import skills
@@ -145,12 +156,12 @@ class TestVersion:
         r = run(["--version"], proj)
         assert r.returncode == 0
         assert "meridian" in r.stdout
-        assert "0.2.0" in r.stdout
+        assert _package_version() in r.stdout
 
     def test_version_short_flag(self, proj: Path) -> None:
         r = run(["-V"], proj)
         assert r.returncode == 0
-        assert "0.2.0" in r.stdout
+        assert _package_version() in r.stdout
 
     def test_help_exits_zero(self, proj: Path) -> None:
         r = run(["--help"], proj)
@@ -564,12 +575,30 @@ class TestInstall:
         r = run(["install", "--project", "--path", str(tmp_path)], tmp_path)
         assert "/meridian:spec" in r.stdout
 
-    def test_rerun_skips_without_force(self, tmp_path: Path) -> None:
+    def test_rerun_writes_nothing_when_current(self, tmp_path: Path) -> None:
+        """FEAT-010: identical files are 'up to date', not merely 'already there'."""
         run(["install", "--project", "--path", str(tmp_path)], tmp_path)
         r = run(["install", "--project", "--path", str(tmp_path)], tmp_path)
         assert r.returncode == 0
-        assert "skipped" in r.stdout
+        assert "already up to date" in r.stdout
         assert "0 skill" in r.stdout
+
+    def test_outdated_skill_reported_and_left_alone(self, tmp_path: Path) -> None:
+        """A repo that customised a skill must not be silently clobbered."""
+        run(["install", "--project", "--path", str(tmp_path)], tmp_path)
+        skill = tmp_path / ".claude" / "commands" / "meridian" / "spec.md"
+        skill.write_text("locally customised")
+
+        r = run(["install", "--project", "--path", str(tmp_path)], tmp_path)
+
+        assert "outdated" in r.stdout
+        assert skill.read_text() == "locally customised"
+
+    def test_dry_run_writes_nothing(self, tmp_path: Path) -> None:
+        r = run(["install", "--project", "--path", str(tmp_path), "--dry-run"], tmp_path)
+        assert r.returncode == 0
+        assert not (tmp_path / ".claude" / "commands" / "meridian").exists()
+        assert "would be written" in r.stdout
 
     def test_force_overwrites(self, tmp_path: Path) -> None:
         run(["install", "--project", "--path", str(tmp_path)], tmp_path)

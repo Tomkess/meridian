@@ -15,6 +15,8 @@ Index of all features across all goals and lifecycle states.
 
 | ID | Name | Goal | Status | Appetite | Conf | Cycle | Updated |
 |---|---|---|---|---|---|---|---|
+| FEAT-011 | Release flow: single-sourced version, scripts/release.sh, changelog, tag and GitHub release | ~ | idea | xs | — | — | 2026-08-18 |
+| FEAT-010 | Propagate skills to every registered project with meridian install --all | ~ | in-progress | s | high | — | 2026-08-18 |
 | FEAT-001 | Capture Layer 3 golden-set runs: run scripts/run_golden.sh and commit outputs to tests/golden/runs/ to un-skip the 22 structural regression tests | ~ | done | s | — | — | 2026-07-14 |
 | FEAT-002 | Add integration tests for external seams: Ollama embed + LanceDB round-trip, mocked with pytest-httpx (happy-path, complementing existing degradation tests) | ~ | done | s | — | — | 2026-07-14 |
 | FEAT-003 | Skill-consistency regression harness: run a skill twice and diff output structure (sections + frontmatter) to catch ambiguous prompts, now that model routing changed | ~ | done | s | — | — | 2026-07-14 |
