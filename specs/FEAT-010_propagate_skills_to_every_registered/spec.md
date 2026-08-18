@@ -15,7 +15,7 @@ id: feat-010
 name: Propagate skills to every registered project with meridian install --all
 scheduler: null
 sources: []
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-18'
 ---
