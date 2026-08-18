@@ -16,7 +16,7 @@ name: 'Release flow: single-sourced version, scripts/release.sh, changelog, tag 
   GitHub release'
 scheduler: null
 sources: []
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-18'
 ---
