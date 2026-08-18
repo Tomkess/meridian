@@ -17,11 +17,11 @@ def test_meridian_home_is_isolated() -> None:
 
 
 def test_real_home_not_referenced_by_resolved_paths() -> None:
-    from meridian.home import inbox_dir, registry_file
+    from meridian.home import registry_file
 
     real = Path("~/.meridian").expanduser()
-    assert real not in inbox_dir(create=False).parents
     assert real not in registry_file().parents
+    assert registry_file() != real / "projects.toml"
 
 
 def test_init_registration_lands_in_isolated_home(tmp_path: Path) -> None:
