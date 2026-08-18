@@ -1197,7 +1197,10 @@ def inbox_main(ctx: typer.Context):
     console.print(f"\n[bold]Inbox[/bold] — {len(captures)} pending\n")
     for capture_item in captures:
         suggestions = []
-        if entries:
+        # An explicit #hashtag or frontmatter hint is worth showing even before
+        # any project is registered — that is the state a new machine is in
+        # right after the first phone capture arrives.
+        if entries or capture_item.project:
             from meridian.routing import suggest
             suggestions = suggest(capture_item, entries, lancedb_path, ollama_model)
 

@@ -111,6 +111,17 @@ class TestInboxListing:
         assert "1 pending" in r.stdout
         assert "a distinctive idea about retries" in r.stdout
 
+    def test_hashtag_hint_shown_without_any_registry(self, tmp_path: Path, home: Path) -> None:
+        """The state a new machine is in right after its first phone capture."""
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        run(["capture", "an idea #some-project"], scratch, home)
+
+        r = run(["inbox"], scratch, home)
+
+        assert "some-project" in r.stdout
+        assert "explicit" in r.stdout
+
     def test_warns_when_no_projects_registered(self, tmp_path: Path, home: Path) -> None:
         scratch = tmp_path / "scratch"
         scratch.mkdir()
