@@ -92,8 +92,15 @@ project registry or cross-project routing UI), stop and split.
 - **AC5** — Two different repo paths whose directory names are identical (e.g.
   `~/a/meridian` and `~/b/meridian`) produce the same default slug. This is
   accepted and documented, not solved: the user resolves it by setting `project`
-  explicitly. `meridian index` warns when it detects rows for the current slug
-  that originate from a different `root` path.
+  explicitly. Covered by
+  `test_config.py::test_identical_directory_names_collide_by_design`.
+- **AC5b** — **NOT IMPLEMENTED.** The original AC also asked that `meridian
+  index` warn when it finds rows for the current slug that originate from a
+  different `root` path. Detecting that requires storing each row's repo root,
+  i.e. a second schema column beyond `project` — real scope on top of an `s`
+  appetite, and speculative until someone actually hits the collision. Deferred
+  deliberately rather than quietly dropped; the slug collision itself is
+  documented in `CLAUDE.md` with the explicit-`project` remedy.
 
 ### Storage
 
