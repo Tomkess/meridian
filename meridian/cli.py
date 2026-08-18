@@ -4,6 +4,7 @@ import re
 import sys
 import tempfile
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -1272,6 +1273,300 @@ def projects():
 
 
 # --------------------------------------------------------------------------- #
+# skill sync helpers (FEAT-010)
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class SkillSync:
+    """What a skill install did, or would do."""
+    new: list[str]
+    changed: list[str]     # present but differs from the bundled version
+    current: list[str]     # byte-identical, nothing to do
+    written: int
+
+    @property
+    def pending(self) -> int:
+        """Files that differ and were not written (needs --force)."""
+        return len(self.changed)
+
+
+def _bundled_skills_dir() -> Path:
+    import meridian as _meridian_pkg
+
+    return Path(_meridian_pkg.__file__).parent / "skills" / "commands"
+
+
+def _sync_skills(dest: Path, *, force: bool, dry_run: bool) -> SkillSync:
+    """Copy bundled skills into *dest*, reporting drift.
+
+    Compares content rather than mere existence: "already installed" hides the
+    case that actually matters after an upgrade — a skill that is present but
+    stale. An outdated file is only overwritten with --force, so a project that
+    deliberately customised a skill is never silently clobbered.
+    """
+    import shutil
+
+    src_dir = _bundled_skills_dir()
+    new: list[str] = []
+    changed: list[str] = []
+    current: list[str] = []
+    written = 0
+
+    if not dry_run:
+        dest.mkdir(parents=True, exist_ok=True)
+
+    for skill in sorted(src_dir.glob("*.md")):
+        target = dest / skill.name
+        if not target.exists():
+            new.append(skill.stem)
+        elif target.read_bytes() == skill.read_bytes():
+            current.append(skill.stem)
+            continue
+        else:
+            changed.append(skill.stem)
+            if not force:
+                continue
+
+        if not dry_run:
+            shutil.copy2(skill, target)
+        written += 1
+
+    return SkillSync(new=new, changed=changed, current=current, written=written)
+
+
+def _git(args: list[str], cwd: Path, timeout: int = 60):
+    """Run git, capturing output. Never raises on a non-zero exit."""
+    import subprocess
+
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout
+    )
+
+
+def _default_branch(repo: Path) -> str | None:
+    """The remote's default branch, e.g. 'main'. None when there is no remote."""
+    r = _git(["symbolic-ref", "refs/remotes/origin/HEAD"], repo)
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip().rsplit("/", 1)[-1]
+    # Fall back to asking the remote directly — refs/remotes/origin/HEAD is not
+    # always present on a clone made with --single-branch.
+    r = _git(["remote", "show", "origin"], repo, timeout=30)
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            if "HEAD branch:" in line:
+                return line.split(":", 1)[1].strip()
+    return None
+
+
+def _open_skill_pr(entry, version: str, *, dry_run: bool) -> tuple[str, str]:
+    """Propose a skill update to one repo as a pull request.
+
+    Returns (status, detail) for the summary table.
+
+    The copy happens inside a throwaway git worktree, never the repo's own
+    working tree: these are ten repos the user may have work in progress in, and
+    silently mutating a checkout — or moving its HEAD — is exactly the failure
+    this project has already been bitten by.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not (entry.path / ".git").exists():
+        return "skipped", "not a git repository"
+
+    if _git(["remote", "get-url", "origin"], entry.path).returncode != 0:
+        return "skipped", "no 'origin' remote"
+
+    base = _default_branch(entry.path)
+    if base is None:
+        return "skipped", "could not resolve the default branch"
+
+    branch = f"chore/meridian-skills-{version}"
+
+    fetch = _git(["fetch", "origin", base], entry.path, timeout=120)
+    if fetch.returncode != 0:
+        return "failed", f"fetch failed: {fetch.stderr.strip().splitlines()[-1:] or ''}"
+
+    if dry_run:
+        return "would open", f"{branch} → {base}"
+
+    tmp = Path(tempfile.mkdtemp(prefix="meridian-skills-"))
+    worktree = tmp / "wt"
+    try:
+        add = _git(
+            ["worktree", "add", "--detach", str(worktree), f"origin/{base}"],
+            entry.path, timeout=120,
+        )
+        if add.returncode != 0:
+            return "failed", f"worktree: {add.stderr.strip().splitlines()[-1:] or ''}"
+
+        _git(["checkout", "-B", branch], worktree)
+        result = _sync_skills(
+            worktree / ".claude" / "commands" / "meridian", force=True, dry_run=False
+        )
+        if not result.written:
+            return "current", "skills already match"
+
+        _git(["add", ".claude/commands/meridian"], worktree)
+        if not _git(["diff", "--cached", "--quiet"], worktree).returncode:
+            return "current", "no net change"
+
+        message = (
+            f"chore: update Meridian skills to {version}\n\n"
+            f"{len(result.new)} added, {len(result.changed)} updated. "
+            "Generated by `meridian install --all --pr`.\n"
+        )
+        commit = _git(["commit", "-m", message], worktree)
+        if commit.returncode != 0:
+            return "failed", "commit failed"
+
+        push = _git(["push", "-u", "origin", branch, "--force-with-lease"], worktree, timeout=180)
+        if push.returncode != 0:
+            return "failed", f"push failed: {(push.stderr.strip().splitlines() or [''])[-1]}"
+
+        existing = subprocess.run(
+            ["gh", "pr", "list", "--head", branch, "--json", "url", "--jq", ".[0].url"],
+            cwd=worktree, capture_output=True, text=True, timeout=60,
+        )
+        if existing.returncode == 0 and existing.stdout.strip():
+            return "updated", existing.stdout.strip()
+
+        pr = subprocess.run(
+            ["gh", "pr", "create", "--base", base, "--head", branch,
+             "--title", f"chore: update Meridian skills to {version}",
+             "--body",
+             f"Syncs `.claude/commands/meridian/` with Meridian {version}.\n\n"
+             f"- {len(result.new)} skill(s) added\n"
+             f"- {len(result.changed)} skill(s) updated\n\n"
+             "Opened by `meridian install --all --pr`.\n"],
+            cwd=worktree, capture_output=True, text=True, timeout=120,
+        )
+        if pr.returncode != 0:
+            return "failed", (pr.stderr.strip().splitlines() or ["gh pr create failed"])[-1]
+        return "opened", pr.stdout.strip().splitlines()[-1] if pr.stdout.strip() else branch
+
+    except (OSError, subprocess.SubprocessError) as e:
+        return "failed", str(e)
+    finally:
+        _git(["worktree", "remove", "--force", str(worktree)], entry.path)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _install_prs_to_all(*, dry_run: bool) -> None:
+    """Open a skill-update PR in every tracked project (FEAT-010)."""
+    from meridian import __version__
+    from meridian.registry import all_projects
+
+    entries = all_projects()
+    if not entries:
+        console.print(
+            "[dim]No projects tracked. Run [bold]meridian register[/bold] in each repo.[/dim]"
+        )
+        raise typer.Exit(0)
+
+    version = f"v{__version__}"
+    console.print()
+    verb = "Previewing skill PRs" if dry_run else "Opening skill PRs"
+    console.print(f"  {verb} — [bold]{len(entries)} tracked project(s)[/bold], {version}")
+    console.print()
+
+    table = Table(box=box.SIMPLE, show_header=True, header_style="bold")
+    table.add_column("Project", no_wrap=True, min_width=20)
+    table.add_column("Result", no_wrap=True, width=10)
+    table.add_column("", overflow="fold")
+
+    styles = {
+        "opened": "green", "updated": "green", "would open": "cyan",
+        "current": "dim", "skipped": "yellow", "failed": "red",
+    }
+    for entry in sorted(entries, key=lambda e: e.slug):
+        if not entry.exists:
+            table.add_row(entry.slug, "[yellow]skipped[/yellow]", "path not found")
+            continue
+        with console.status(f"  {entry.slug}…"):
+            status_text, detail = _open_skill_pr(entry, version, dry_run=dry_run)
+        style = styles.get(status_text, "")
+        table.add_row(entry.slug, f"[{style}]{status_text}[/{style}]", detail)
+
+    console.print(table)
+    console.print(
+        "  [dim]Each repo's working tree is untouched — the update is built in a "
+        "temporary worktree and proposed as a PR.[/dim]"
+    )
+
+
+def _install_to_all(*, force: bool, dry_run: bool) -> None:
+    """Refresh skills in every tracked project (FEAT-010).
+
+    The point of the project registry: after upgrading meridian, one command
+    brings every repo's committed skills up to date instead of ten manual
+    `--project` runs.
+    """
+    from meridian.registry import all_projects
+
+    entries = all_projects()
+    if not entries:
+        console.print(
+            "[dim]No projects tracked. Run [bold]meridian register[/bold] in each repo.[/dim]"
+        )
+        raise typer.Exit(0)
+
+    console.print()
+    header = "Previewing skill sync" if dry_run else "Syncing skills"
+    console.print(f"  {header} — [bold]{len(entries)} tracked project(s)[/bold]")
+    console.print()
+
+    table = Table(box=box.SIMPLE, show_header=True, header_style="bold")
+    table.add_column("Project", no_wrap=True, min_width=20)
+    table.add_column("new", justify="right", width=5)
+    table.add_column("upd", justify="right", width=5)
+    table.add_column("same", justify="right", width=6)
+    table.add_column("", overflow="fold")
+
+    total_written = 0
+    total_pending = 0
+
+    for entry in sorted(entries, key=lambda e: e.slug):
+        if not entry.exists:
+            table.add_row(entry.slug, "·", "·", "·", "[yellow]path not found — skipped[/yellow]")
+            continue
+
+        dest = entry.path / ".claude" / "commands" / "meridian"
+        try:
+            result = _sync_skills(dest, force=force, dry_run=dry_run)
+        except OSError as e:
+            table.add_row(entry.slug, "·", "·", "·", f"[red]{e.strerror or e}[/red]")
+            continue
+
+        total_written += result.written
+        note = ""
+        if result.changed and not force:
+            total_pending += result.pending
+            note = f"[yellow]{result.pending} outdated — needs --force[/yellow]"
+        table.add_row(
+            entry.slug,
+            str(len(result.new)) if result.new else "[dim]·[/dim]",
+            str(len(result.changed)) if result.changed else "[dim]·[/dim]",
+            str(len(result.current)) if result.current else "[dim]·[/dim]",
+            note,
+        )
+
+    console.print(table)
+    verb = "would be written" if dry_run else "written"
+    console.print(f"  [dim]{total_written} file(s) {verb}[/dim]")
+    if total_pending and not force:
+        console.print(
+            f"  [yellow]⚠[/yellow]  {total_pending} outdated skill(s) left alone — "
+            "re-run with [bold]--force[/bold] to update."
+        )
+    if not dry_run and total_written:
+        console.print(
+            "  [dim]Skills are committed per repo, so review and commit the changes there.[/dim]"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # install  — distribute skill files (global or project), namespaced
 # --------------------------------------------------------------------------- #
 
@@ -1286,22 +1581,41 @@ def install_skills(
         None, "--path", "-p",
         help="Project root (used with --project). Default: current directory.",
     ),
+    all_projects: bool = typer.Option(
+        False, "--all",
+        help="Install into every tracked project (see `meridian projects`).",
+    ),
     force: bool = typer.Option(
         False, "--force",
         help="Overwrite skill files that already exist.",
+    ),
+    pr: bool = typer.Option(
+        False, "--pr",
+        help="With --all: propose the update as a pull request in each repo "
+             "instead of writing to their working trees.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Report what would change without writing anything.",
     ),
 ) -> None:
     """Install Meridian's Claude Code skills, namespaced as /meridian:<name>.
 
     By default installs globally into ~/.claude/commands/meridian/ so the skills
-    are available in every project.  Run again after upgrading the package
-    (add --force) to refresh.  Use --project to pin skills to one repository.
+    are available in every project.  Use --project to pin skills to one
+    repository, or --all to refresh every tracked project at once — the usual
+    move after upgrading the package.
     """
-    import shutil
+    if all_projects:
+        if pr:
+            _install_prs_to_all(dry_run=dry_run)
+        else:
+            _install_to_all(force=force, dry_run=dry_run)
+        return
 
-    import meridian as _meridian_pkg
-
-    commands_src = Path(_meridian_pkg.__file__).parent / "skills" / "commands"
+    if pr:
+        console.print("[red]Error:[/red] --pr requires --all.")
+        raise typer.Exit(1)
 
     if project:
         root = Path(path).resolve() if path else Path.cwd()
@@ -1316,45 +1630,35 @@ def install_skills(
         dest = Path.home() / ".claude" / "commands" / "meridian"
         scope_label = "global (~/.claude/commands/meridian/)"
 
-    dest.mkdir(parents=True, exist_ok=True)
-
     console.print()
     console.print(f"  Installing Meridian skills — [bold]{scope_label}[/bold]")
     console.print()
 
-    copied = 0
-    skipped = 0
-    for skill in sorted(commands_src.glob("*.md")):
-        target = dest / skill.name
-        if target.exists() and not force:
-            console.print(f"  [dim]  skip  {skill.stem} (already installed)[/dim]")
-            skipped += 1
-        else:
-            shutil.copy2(skill, target)
-            copied += 1
+    result = _sync_skills(dest, force=force, dry_run=dry_run)
+
+    for name in result.new:
+        console.print(f"  [green]+[/green] {name}")
+    for name in result.changed:
+        marker = "[yellow]~[/yellow]" if not force else "[green]↑[/green]"
+        console.print(f"  {marker} {name}" + ("" if force else "  [dim](outdated)[/dim]"))
+    if result.current:
+        console.print(f"  [dim]  {len(result.current)} already up to date[/dim]")
 
     console.print()
+    verb = "would be written" if dry_run else "written"
     console.print(
-        f"  [green]✓[/green] {copied} skill(s) installed"
-        + (f", {skipped} skipped" if skipped else "")
-        + f" → [bold]{dest}[/bold]"
+        f"  [green]✓[/green] {result.written} skill(s) {verb} → [bold]{dest}[/bold]"
     )
-    if skipped and not force:
+    if result.changed and not force and not dry_run:
         console.print(
-            "  [dim]Re-run with [bold]--force[/bold] to overwrite the skipped files "
-            "(e.g. after upgrading meridian).[/dim]"
+            f"  [yellow]⚠[/yellow]  {len(result.changed)} skill(s) are outdated — "
+            "re-run with [bold]--force[/bold] to update them."
         )
     console.print()
     console.print(
         "  Invoke them in Claude Code as [cyan]/meridian:spec[/cyan], "
         "[cyan]/meridian:idea[/cyan], [cyan]/meridian:tasks[/cyan], …"
     )
-    console.print(
-        "  [dim]Skills reason; the [bold]meridian[/bold] CLI runs ops. "
-        "Both must be present.[/dim]"
-    )
-    console.print()
-
 
 # --------------------------------------------------------------------------- #
 # help  — static manual
@@ -1515,6 +1819,10 @@ def help_cmd():
          'Read notes (and any agent visual reading) from a sidecar file'),
         ('meridian enrich feat-007 shot.png --note "…" --vision',
          'Fallback: also describe the image with the configured Ollama vision model'),
+        ('meridian install --all',
+         "Push skills into every tracked repo (+ --force, --dry-run)"),
+        ('meridian install --all --pr',
+         'Propose the skill update as a PR per repo — working trees untouched'),
         ('meridian register',
          'Track this repo so it shows up in the cross-project dashboard'),
         ('meridian projects',

@@ -12,6 +12,8 @@ idea → spec → tasks → build → production. It is designed to be installed
 ```bash
 meridian status                              # full dashboard (task progress, deps, confidence)
 meridian register                            # track this repo in the cross-project dashboard
+meridian install --all                       # push skills into every tracked repo
+meridian install --all --pr                  # ...as a PR per repo (working trees untouched)
 meridian projects                            # list every tracked project
 meridian status --all                        # cross-project dashboard
 meridian new "idea text" --appetite m        # quick-capture idea with appetite
@@ -98,6 +100,19 @@ answers the question the per-repo dashboard cannot: what is in flight everywhere
 
 A tracked path that no longer resolves is reported and skipped, never deleted — a repo
 may just be on another disk.
+
+### Propagating skills
+
+`meridian install --all` refreshes `.claude/commands/meridian/` in every tracked repo.
+It compares file contents, so a skill you customised locally shows as `outdated` and is
+left alone unless you pass `--force`.
+
+`meridian install --all --pr` proposes the same update as a pull request per repo. Each
+one is built in a throwaway git worktree off `origin/HEAD`, so no tracked repo's working
+tree or HEAD is touched — important when several of them have work in progress. Requires
+`gh` and an `origin` remote; repos without one are reported and skipped.
+
+Add `--dry-run` to either to see what would change.
 
 ## Specs structure
 
