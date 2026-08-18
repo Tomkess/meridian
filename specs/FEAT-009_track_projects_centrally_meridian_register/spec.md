@@ -16,7 +16,7 @@ name: 'Track projects centrally: meridian register plus a cross-project status -
   dashboard'
 scheduler: null
 sources: []
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-18'
 ---
