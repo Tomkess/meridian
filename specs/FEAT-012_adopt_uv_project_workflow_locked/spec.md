@@ -15,7 +15,7 @@ id: feat-012
 name: 'Adopt uv project workflow: locked dev env, dependency-groups, uv version bump'
 scheduler: null
 sources: []
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-18'
 ---
