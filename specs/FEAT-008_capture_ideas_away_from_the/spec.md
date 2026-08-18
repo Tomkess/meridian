@@ -16,7 +16,7 @@ name: Capture ideas away from the PC into a global inbox and triage them into th
   right project
 scheduler: null
 sources: []
-status: done
+status: in-production
 tags: []
 updated: '2026-08-18'
 ---

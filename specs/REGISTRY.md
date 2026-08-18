@@ -21,8 +21,8 @@ Index of all features across all goals and lifecycle states.
 | FEAT-004 | Add file lock to transition_spec() to prevent frontmatter corruption under concurrent multi-agent/worktree writes | ~ | done | xs | — | — | 2026-07-14 |
 | FEAT-005 | Add dependency-bounds test for LanceDB minor-version API drift (last item on production-ready checklist) | ~ | done | xs | — | — | 2026-07-14 |
 | FEAT-006 | Ingest annotated screenshots into a feature's research corpus | ~ | done | s | high | — | 2026-08-18 |
-| FEAT-008 | Capture ideas away from the PC into a global inbox and triage them into the right project | ~ | done | m | medium | — | 2026-08-18 |
 | FEAT-007 | Scope the shared LanceDB index per project so 10+ repos stop clobbering each other | ~ | in-production | s | high | — | 2026-08-18 |
+| FEAT-008 | Capture ideas away from the PC into a global inbox and triage them into the right project | ~ | in-production | m | medium | — | 2026-08-18 |
 
 ## Goals
 
