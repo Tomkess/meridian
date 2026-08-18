@@ -15,7 +15,7 @@ name: Scope the shared LanceDB index per project so 10+ repos stop clobbering ea
   other
 scheduler: null
 sources: []
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-18'
 ---
