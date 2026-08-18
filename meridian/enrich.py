@@ -203,6 +203,45 @@ def embed(text: str, model: str, base_url: str = "http://localhost:11434") -> li
 
 # ─── LanceDB storage ──────────────────────────────────────────────────────── #
 
+MIGRATION_HINT = (
+    "The vector index predates per-project scoping and must be rebuilt. "
+    "Run `meridian index` here, and once in every other Meridian project — "
+    "chunks are derived from each feature's sources/, so nothing is lost."
+)
+
+
+class LegacyIndexError(RuntimeError):
+    """Raised when the `chunks` table predates the FEAT-007 `project` column.
+
+    Subclasses RuntimeError so existing CLI handlers degrade gracefully rather
+    than traceback, while callers that care can catch this specifically and
+    print the migration hint.
+    """
+
+    def __init__(self, message: str = MIGRATION_HINT):
+        super().__init__(message)
+
+
+def _sql_quote(value: str) -> str:
+    """Escape a value for embedding in a LanceDB predicate.
+
+    B1: user-supplied names reach these predicates — "O'Reilly_report.pdf", a
+    URL with an apostrophe, or a project slug taken from a directory name.
+    """
+    return value.replace("'", "''")
+
+
+def _is_legacy_schema(table) -> bool:
+    """True when the table predates the `project` column.
+
+    Detected by inspecting schema field names rather than by catching a write
+    failure: LanceDB's schema-evolution APIs drift across minor versions, but
+    `table.schema` is stable across the range pinned by the FEAT-005
+    dependency-bounds test.
+    """
+    return "project" not in set(table.schema.names)
+
+
 def _open_table(lancedb_path: Path, dim: int):
     _require_lancedb_compat()
     import lancedb
@@ -212,9 +251,16 @@ def _open_table(lancedb_path: Path, dim: int):
     db = lancedb.connect(str(lancedb_path))
 
     if "chunks" in db.table_names():
-        return db.open_table("chunks")
+        table = db.open_table("chunks")
+        if _is_legacy_schema(table):
+            raise LegacyIndexError()
+        return table
 
     schema = pa.schema([
+        # FEAT-007: `project` scopes every row to the repo that wrote it. The
+        # index is shared across all installs, so without this a rebuild in one
+        # repo silently destroys another's research.
+        pa.field("project", pa.string()),
         pa.field("feat_id", pa.string()),
         pa.field("source_name", pa.string()),
         pa.field("chunk_idx", pa.int32()),
@@ -226,6 +272,7 @@ def _open_table(lancedb_path: Path, dim: int):
 
 def upsert_chunks(
     lancedb_path: Path,
+    project: str,
     feat_id: str,
     source_name: str,
     chunks: list[str],
@@ -234,17 +281,21 @@ def upsert_chunks(
     if not chunks:
         return
     table = _open_table(lancedb_path, len(vectors[0]))
-    # Remove stale entries for this source before re-adding.
-    # B1: escape single quotes to avoid SQL injection from user-supplied source names
-    # (e.g. O'Reilly_report.pdf or URLs with apostrophes).
-    safe_feat = feat_id.replace("'", "''")
-    safe_src = source_name.replace("'", "''")
+    # Remove stale entries for this source before re-adding. Scoped to the
+    # project: without it, the same FEAT id plus the same filename in another
+    # repo — FEAT-001 + notes.md is entirely likely — deletes that repo's rows.
+    predicate = (
+        f"project = '{_sql_quote(project)}' "
+        f"AND feat_id = '{_sql_quote(feat_id)}' "
+        f"AND source_name = '{_sql_quote(source_name)}'"
+    )
     try:
-        table.delete(f"feat_id = '{safe_feat}' AND source_name = '{safe_src}'")
+        table.delete(predicate)
     except Exception:
         pass
     rows = [
         {
+            "project": project,
             "feat_id": feat_id,
             "source_name": source_name,
             "chunk_idx": i,
@@ -261,8 +312,14 @@ def search_similar(
     query_vector: list[float],
     limit: int = 10,
     feat_id_filter: str | None = None,
+    project: str | None = None,
 ) -> list[dict]:
-    """ANN search, optionally filtered to a single feature."""
+    """ANN search, optionally filtered to a single feature and/or project.
+
+    ``project=None`` searches every project in the shared index. Callers that
+    answer questions about *this* repo must pass a project — see
+    ``search.semantic_search``, which scopes by default.
+    """
     _require_lancedb_compat()
     import lancedb
 
@@ -272,9 +329,18 @@ def search_similar(
     if "chunks" not in db.table_names():
         return []
     table = db.open_table("chunks")
-    q = table.search(query_vector).limit(limit)
+    if _is_legacy_schema(table):
+        raise LegacyIndexError()
+
+    clauses = []
     if feat_id_filter:
-        q = q.where(f"feat_id = '{feat_id_filter.upper()}'")
+        clauses.append(f"feat_id = '{_sql_quote(feat_id_filter.upper())}'")
+    if project:
+        clauses.append(f"project = '{_sql_quote(project)}'")
+
+    q = table.search(query_vector).limit(limit)
+    if clauses:
+        q = q.where(" AND ".join(clauses))
     return q.to_list()
 
 
@@ -501,7 +567,7 @@ def enrich_feature(cfg: MeridianConfig, feat_id: str, source: str) -> dict:
     vectors = [embed(c, model=cfg.ollama_model) for c in chunks]
 
     # 5. Store in LanceDB
-    upsert_chunks(cfg.lancedb_path, feat_id_norm, filename, chunks, vectors)
+    upsert_chunks(cfg.lancedb_path, cfg.project, feat_id_norm, filename, chunks, vectors)
 
     # 6. Update spec frontmatter sources list
     _append_sources(spec_path, [f"sources/{filename}"])
@@ -600,7 +666,7 @@ def ingest_screenshot(
     vectors = [embed(c, model=cfg.ollama_model) for c in chunks]
 
     # 5. Store, keyed on the sidecar so re-ingest replaces rather than duplicates.
-    upsert_chunks(cfg.lancedb_path, feat_id_norm, sidecar_name, chunks, vectors)
+    upsert_chunks(cfg.lancedb_path, cfg.project, feat_id_norm, sidecar_name, chunks, vectors)
 
     # 6. Both the image and its notes are sources of record.
     _append_sources(spec_path, [f"sources/{image_name}", f"sources/{sidecar_name}"])
@@ -635,14 +701,34 @@ def _sidecar_image_ref(sidecar_path: Path) -> str:
 
 
 def reindex_all(cfg: MeridianConfig) -> dict:
-    """Drop and rebuild the entire LanceDB index from all sources."""
+    """Rebuild *this project's* slice of the LanceDB index from its sources.
+
+    Returns ``sources``, ``chunks``, and ``migrated`` — the last is True when a
+    pre-FEAT-007 table was recreated, which wipes other projects' rows and means
+    each of them must run `meridian index` once to repopulate.
+    """
     _require_lancedb_compat()
     import lancedb
 
+    migrated = False
     if cfg.lancedb_path.exists():
         db = lancedb.connect(str(cfg.lancedb_path))
         if "chunks" in db.table_names():
-            db.drop_table("chunks")
+            table = db.open_table("chunks")
+            if _is_legacy_schema(table):
+                # Pre-FEAT-007 rows carry no project, so there is no way to know
+                # which repo wrote them and no way to keep only ours. Recreating
+                # is the documented recovery path: chunks are derived data,
+                # rebuildable from each feature's sources/.
+                db.drop_table("chunks")
+                migrated = True
+            else:
+                # The whole point of FEAT-007: clear only our own rows and leave
+                # every other project's research intact.
+                try:
+                    table.delete(f"project = '{_sql_quote(cfg.project)}'")
+                except Exception:
+                    pass
 
     total_chunks = 0
     total_sources = 0
@@ -661,8 +747,9 @@ def reindex_all(cfg: MeridianConfig) -> dict:
             else:
                 chunks = chunk_text(text)
             vectors = [embed(c, model=cfg.ollama_model) for c in chunks]
-            upsert_chunks(cfg.lancedb_path, feat_id, src_file.name, chunks, vectors)
+            upsert_chunks(cfg.lancedb_path, cfg.project, feat_id, src_file.name,
+                          chunks, vectors)
             total_chunks += len(chunks)
             total_sources += 1
 
-    return {"sources": total_sources, "chunks": total_chunks}
+    return {"sources": total_sources, "chunks": total_chunks, "migrated": migrated}

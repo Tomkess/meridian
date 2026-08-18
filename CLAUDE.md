@@ -26,8 +26,10 @@ meridian enrich <feat-id> --latest-screenshot --note "..."    # grab newest OS s
 meridian enrich <feat-id> --from-clipboard --note "..."       # grab clipboard image (macOS)
 meridian enrich <feat-id> <image> --note-file <path>          # notes (+ visual reading) from a sidecar
 meridian enrich <feat-id> <image> --note "..." --vision       # add local Ollama caption (fallback)
-meridian search "query"                      # semantic search across research
-meridian index                               # rebuild vector index
+meridian search "query"                      # semantic search across this project's research
+meridian search "query" --all-projects       # widen to every project sharing the index
+meridian index                               # rebuild vector index + REGISTRY.md
+meridian index --vectors-only                # vectors only — leaves REGISTRY.md untouched
 meridian transition --from-merge <branch>    # auto-transition after git merge (branch: feat-NNN/slug)
 meridian guide                               # project setup advisor
 meridian help                                # full manual
@@ -66,6 +68,7 @@ meridian help                                # full manual
 
 ```toml
 [meridian]
+project        = "my-repo"    # scopes this repo's rows in the shared index
 specs_path     = "specs"
 lancedb_path   = "~/.meridian/lancedb"
 ollama_model   = "mxbai-embed-large"
@@ -75,6 +78,11 @@ reranker_model = "BAAI/bge-reranker-v2-m3"
 host      = "https://your-workspace.azuredatabricks.net"
 token_env = "DATABRICKS_TOKEN"
 ```
+
+`lancedb_path` defaults to `~/.meridian/lancedb`, which **every** Meridian install
+shares. `project` is what keeps repos from reading and overwriting each other's
+research; it defaults to a slug of the repo directory name. Two checkouts with the
+same directory name get the same slug — set `project` explicitly to separate them.
 
 ## Specs structure
 

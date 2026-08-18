@@ -14,7 +14,7 @@ from rich.table import Table
 from rich.text import Text
 
 from meridian import __version__
-from meridian.config import load_config
+from meridian.config import load_config, slugify_project
 from meridian.specs import (
     APPETITE_LABELS,
     APPETITE_VALUES,
@@ -22,7 +22,6 @@ from meridian.specs import (
     VALID_STATUSES,
     all_specs,
     create_spec,
-    feat_display_name,
     load_spec,
     rebuild_registry,
     save_spec,
@@ -695,9 +694,14 @@ def search(
     feat: str | None = typer.Option(None, "--feat", "-f", help="Filter to a specific feature ID"),
     limit: int = typer.Option(5, "--limit", "-n", help="Max results to return"),
     no_rerank: bool = typer.Option(False, "--no-rerank", help="Skip BGE reranker (faster)"),
+    all_projects: bool = typer.Option(
+        False, "--all-projects",
+        help="Search every Meridian project's research, not just this one",
+    ),
 ):
-    """Semantic search across all enriched research in the vector index."""
-    from meridian.search import _reranker_available, semantic_search
+    """Semantic search across this project's enriched research."""
+    from meridian.enrich import LegacyIndexError
+    from meridian.search import _reranker_available, result_label, semantic_search
     cfg = _config()
 
     rerank = not no_rerank
@@ -713,23 +717,36 @@ def search(
                 feat_id_filter=feat.upper() if feat else None,
                 limit=limit,
                 rerank=rerank,
+                all_projects=all_projects,
             )
+        except LegacyIndexError as e:
+            # Not a failure of this query — the index just predates per-project
+            # scoping. Exit 0 with the remediation, so scripts and skills that
+            # shell out don't treat a migration as a crash.
+            console.print(f"[yellow]⚠[/yellow]  {e}")
+            raise typer.Exit(0)
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)
 
     if not results:
+        scope_hint = (
+            "" if all_projects
+            else f" [dim]Searching [bold]{cfg.project}[/bold] only — add --all-projects to widen.[/dim]"
+        )
         console.print(
             "[dim]No results. Run [bold]meridian enrich <feat-id> <source>[/bold] to index research.[/dim]"
+            + scope_hint
         )
         raise typer.Exit(0)
 
-    console.print(f'\n[bold]Results for[/bold] "{query}"{reranker_note}\n')
+    scope_note = " [dim](all projects)[/dim]" if all_projects else ""
+    console.print(f'\n[bold]Results for[/bold] "{query}"{scope_note}{reranker_note}\n')
     for i, r in enumerate(results, 1):
         score = r.get("rerank_score", r.get("_distance"))
         score_str = f"  [dim]score {score:.3f}[/dim]" if isinstance(score, float) else ""
         preview = r["text"][:200].replace("\n", " ").strip()
-        name = feat_display_name(cfg.specs_path, r["feat_id"])
+        name = result_label(r, cfg)
         console.print(
             f"[bold]{i}.[/bold] [blue]{name}[/blue] "
             f"[dim]{r['source_name']} ·chunk {r['chunk_idx']}[/dim]{score_str}"
@@ -812,23 +829,37 @@ def unlink_job(
 # --------------------------------------------------------------------------- #
 
 @app.command()
-def index():
+def index(
+    vectors_only: bool = typer.Option(
+        False, "--vectors-only",
+        help="Rebuild only this project's vectors; leave REGISTRY.md untouched",
+    ),
+):
     """Rebuild the LanceDB vector index and refresh REGISTRY.md."""
     from meridian.enrich import reindex_all
     cfg = _config()
-    rebuild_registry(cfg.specs_path)
-    console.print("[green]✓[/green] REGISTRY.md rebuilt.")
+    if not vectors_only:
+        rebuild_registry(cfg.specs_path)
+        console.print("[green]✓[/green] REGISTRY.md rebuilt.")
     with console.status("Re-embedding all sources…"):
         try:
             result = reindex_all(cfg)
             console.print(
-                f"[green]✓[/green] Index rebuilt — "
+                f"[green]✓[/green] Index rebuilt for [bold]{cfg.project}[/bold] — "
                 f"[bold]{result['sources']}[/bold] sources, "
                 f"[bold]{result['chunks']}[/bold] chunks."
             )
+            if result.get("migrated"):
+                console.print(
+                    "[yellow]⚠[/yellow]  The old index had no project column and was "
+                    "recreated. Other Meridian projects' chunks were dropped with it — "
+                    "run [bold]meridian index --vectors-only[/bold] once in each to "
+                    "repopulate [dim](sources/ is the source of truth, so nothing is "
+                    "lost; --vectors-only leaves their REGISTRY.md untouched)[/dim]."
+                )
         except RuntimeError as e:
             console.print(f"[yellow]Warning:[/yellow] {e}")
-            console.print("REGISTRY.md was refreshed but vector index was not rebuilt.")
+            console.print("Vector index was not rebuilt.")
 
 
 # --------------------------------------------------------------------------- #
@@ -990,6 +1021,8 @@ def init_project(
     # ── .meridian.toml ─────────────────────────────────────────────────────
     toml_content = (
         "[meridian]\n"
+        f'project        = "{slugify_project(root.name)}"'
+        "   # scopes this repo's rows in the shared index\n"
         'specs_path     = "specs"\n'
         'lancedb_path   = "~/.meridian/lancedb"\n'
         'ollama_model   = "mxbai-embed-large"\n'
@@ -1295,9 +1328,13 @@ def help_cmd():
         ('meridian enrich feat-007 shot.png --note "…" --vision',
          'Fallback: also describe the image with the configured Ollama vision model'),
         ('meridian search "drift detection"',
-         'Semantic search across all research (+ --feat, --limit, --no-rerank)'),
+         'Semantic search across this project\'s research (+ --feat, --limit, --no-rerank)'),
+        ('meridian search "drift detection" --all-projects',
+         'Widen the search to every Meridian project sharing the index'),
         ('meridian index',
-         'Rebuild REGISTRY.md + full vector index'),
+         "Rebuild REGISTRY.md + this project's vector index"),
+        ('meridian index --vectors-only',
+         'Rebuild vectors only — leaves REGISTRY.md untouched (safe in other repos)'),
         ('meridian transition --from-merge feat-007/slug',
          'Auto-transition to in-production after merge (branch must contain feat-NNN)'),
         ('meridian revive feat-007',
@@ -1384,6 +1421,7 @@ def help_cmd():
     console.print()
     toml_example = (
         r"  \[meridian]" + "\n"
+        "  project        = \"my-repo\"                    # scopes this repo in the shared index\n"
         "  specs_path     = \"specs\"                      # where FEAT-NNN/ dirs live\n"
         "  lancedb_path   = \"~/.meridian/lancedb\"        # vector store (global by default)\n"
         "  ollama_model   = \"mxbai-embed-large\"          # embedding model\n"

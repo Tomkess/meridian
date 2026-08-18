@@ -44,6 +44,27 @@ def mock_cfg(tmp_path: Path, specs_dir: Path) -> MeridianConfig:
         databricks_token_env="DATABRICKS_TOKEN",
         databricks_status_timeout=8,
         root=tmp_path,
+        project="test-project",
+    )
+
+
+@pytest.fixture
+def other_cfg(tmp_path: Path, specs_dir: Path) -> MeridianConfig:
+    """A second project sharing mock_cfg's LanceDB path.
+
+    FEAT-007: the shared index is the whole problem, so isolation tests need
+    two configs that differ only by project slug.
+    """
+    return MeridianConfig(
+        specs_path=specs_dir,
+        lancedb_path=tmp_path / ".meridian" / "lancedb",
+        ollama_model="mxbai-embed-large",
+        reranker_model="BAAI/bge-reranker-v2-m3",
+        databricks_host="",
+        databricks_token_env="DATABRICKS_TOKEN",
+        databricks_status_timeout=8,
+        root=tmp_path,
+        project="other-project",
     )
 
 

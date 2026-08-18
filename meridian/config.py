@@ -1,6 +1,11 @@
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+# FEAT-007: used when a directory name slugifies to nothing (e.g. "___").
+# A stable literal beats raising: a weird path must never brick the CLI.
+UNKNOWN_PROJECT = "unknown-project"
 
 
 @dataclass
@@ -13,11 +18,29 @@ class MeridianConfig:
     databricks_token_env: str
     databricks_status_timeout: int  # P5: seconds to wait per job-status fetch
     root: Path  # repo root where .meridian.toml lives
+    # FEAT-007: which project owns rows in the shared LanceDB index. The index
+    # defaults to ~/.meridian/lancedb, which every install shares, so without
+    # this every repo reads and overwrites every other repo's chunks.
+    # Non-default on purpose — load_config() always supplies it — and declared
+    # before the defaulted fields below, which must stay trailing.
+    project: str
     # FEAT-006: optional Ollama vision model used as the *fallback* describer for
     # `meridian enrich --vision`. Empty by default: the primary describer is the
     # agent that can already see the screenshot, so a concrete default would only
     # produce "model not found" warnings on machines that never pull one.
     ollama_vision_model: str = ""
+
+
+def slugify_project(name: str) -> str:
+    """Normalise a project name into an index-safe slug.
+
+    Pure and deterministic: the same string always yields the same slug, with
+    no filesystem or git access. Two repos whose directory names match produce
+    the same slug — accepted, and resolved by setting `project` explicitly in
+    .meridian.toml.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return slug or UNKNOWN_PROJECT
 
 
 def _find_config_file(start: Path) -> Path | None:
@@ -56,5 +79,6 @@ def load_config(cwd: Path | None = None) -> MeridianConfig:
         databricks_token_env=databricks_section.get("token_env", "DATABRICKS_TOKEN"),
         databricks_status_timeout=int(databricks_section.get("status_timeout", 8)),
         root=root,
+        project=slugify_project(str(meridian_section.get("project", "")) or root.name),
         ollama_vision_model=meridian_section.get("ollama_vision_model", ""),
     )

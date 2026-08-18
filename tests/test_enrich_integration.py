@@ -56,7 +56,7 @@ class TestLanceDbRoundTrip:
         chunks = [_chunk("alpha"), _chunk("beta")]
         vectors = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]
 
-        upsert_chunks(db_path, "FEAT-001", "src.txt", chunks, vectors)
+        upsert_chunks(db_path, "test-project", "FEAT-001", "src.txt", chunks, vectors)
 
         # Query nearest to the first vector → first chunk ranks top.
         results = search_similar(db_path, [1.0, 0.0, 0.0, 0.0], limit=2)
@@ -68,8 +68,8 @@ class TestLanceDbRoundTrip:
     def test_feat_id_filter_scopes_results(self, tmp_path: Path) -> None:
         db_path = tmp_path / "lancedb"
         vec = [0.5, 0.5, 0.5, 0.5]
-        upsert_chunks(db_path, "FEAT-001", "a.txt", [_chunk("a")], [vec])
-        upsert_chunks(db_path, "FEAT-002", "b.txt", [_chunk("b")], [vec])
+        upsert_chunks(db_path, "test-project", "FEAT-001", "a.txt", [_chunk("a")], [vec])
+        upsert_chunks(db_path, "test-project", "FEAT-002", "b.txt", [_chunk("b")], [vec])
 
         # search_similar upper-cases the filter internally.
         results = search_similar(db_path, vec, limit=10, feat_id_filter="feat-002")
@@ -82,24 +82,206 @@ class TestLanceDbRoundTrip:
         chunks = [_chunk("x"), _chunk("y"), _chunk("z")]
         vectors = [[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, 1.0, 0]]
 
-        upsert_chunks(db_path, "FEAT-001", "src.txt", chunks, vectors)
+        upsert_chunks(db_path, "test-project", "FEAT-001", "src.txt", chunks, vectors)
         assert _row_count(db_path) == 3
         # Same feat_id + source again → delete-then-add, still 3 rows.
-        upsert_chunks(db_path, "FEAT-001", "src.txt", chunks, vectors)
+        upsert_chunks(db_path, "test-project", "FEAT-001", "src.txt", chunks, vectors)
         assert _row_count(db_path) == 3
 
     def test_upsert_different_source_coexists(self, tmp_path: Path) -> None:
         db_path = tmp_path / "lancedb"
-        upsert_chunks(db_path, "FEAT-001", "a.txt", [_chunk("a")], [[1.0, 0, 0, 0]])
-        upsert_chunks(db_path, "FEAT-001", "b.txt", [_chunk("b")], [[0, 1.0, 0, 0]])
+        upsert_chunks(db_path, "test-project", "FEAT-001", "a.txt", [_chunk("a")], [[1.0, 0, 0, 0]])
+        upsert_chunks(db_path, "test-project", "FEAT-001", "b.txt", [_chunk("b")], [[0, 1.0, 0, 0]])
         # Different source under same feature → both retained.
         assert _row_count(db_path) == 2
 
     def test_empty_chunks_is_noop(self, tmp_path: Path) -> None:
         db_path = tmp_path / "lancedb"
-        upsert_chunks(db_path, "FEAT-001", "src.txt", [], [])
+        upsert_chunks(db_path, "test-project", "FEAT-001", "src.txt", [], [])
         # No table created, nothing to search.
         assert search_similar(db_path, [1.0, 0, 0, 0]) == []
+
+
+class TestProjectScoping:
+    """FEAT-007: the LanceDB store is shared by every Meridian install."""
+
+    def test_same_feat_and_source_in_two_projects_coexist(self, tmp_path: Path) -> None:
+        """The exact collision that motivated FEAT-007.
+
+        Every repo starts at FEAT-001 and filenames repeat, so without the
+        project column enriching in one repo deletes the other's rows.
+        """
+        db_path = tmp_path / "lancedb"
+        upsert_chunks(db_path, "repo-a", "FEAT-001", "notes.md", [_chunk("a")], [[1.0, 0, 0, 0]])
+        upsert_chunks(db_path, "repo-b", "FEAT-001", "notes.md", [_chunk("b")], [[0, 1.0, 0, 0]])
+
+        assert _row_count(db_path) == 2, "repo-b must not have deleted repo-a's row"
+
+        a_hits = search_similar(db_path, [1.0, 0, 0, 0], limit=10, project="repo-a")
+        assert {r["project"] for r in a_hits} == {"repo-a"}
+
+    def test_search_scoped_to_project_excludes_others(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "lancedb"
+        vec = [0.5, 0.5, 0.5, 0.5]
+        upsert_chunks(db_path, "repo-a", "FEAT-002", "a.txt", [_chunk("a")], [vec])
+        upsert_chunks(db_path, "repo-b", "FEAT-002", "b.txt", [_chunk("b")], [vec])
+
+        hits = search_similar(db_path, vec, limit=10, project="repo-b")
+        assert hits
+        assert {r["project"] for r in hits} == {"repo-b"}
+
+    def test_no_project_filter_spans_projects(self, tmp_path: Path) -> None:
+        """--all-projects is a deliberate capability, not an accident."""
+        db_path = tmp_path / "lancedb"
+        vec = [0.5, 0.5, 0.5, 0.5]
+        upsert_chunks(db_path, "repo-a", "FEAT-001", "a.txt", [_chunk("a")], [vec])
+        upsert_chunks(db_path, "repo-b", "FEAT-001", "b.txt", [_chunk("b")], [vec])
+
+        hits = search_similar(db_path, vec, limit=10)
+        assert {r["project"] for r in hits} == {"repo-a", "repo-b"}
+
+    def test_feat_filter_and_project_filter_compose(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "lancedb"
+        vec = [0.5, 0.5, 0.5, 0.5]
+        upsert_chunks(db_path, "repo-a", "FEAT-001", "a.txt", [_chunk("a")], [vec])
+        upsert_chunks(db_path, "repo-a", "FEAT-002", "b.txt", [_chunk("b")], [vec])
+        upsert_chunks(db_path, "repo-b", "FEAT-001", "c.txt", [_chunk("c")], [vec])
+
+        hits = search_similar(db_path, vec, limit=10, feat_id_filter="feat-001", project="repo-a")
+        assert len(hits) == 1
+        assert hits[0]["source_name"] == "a.txt"
+
+    def test_project_slug_with_apostrophe_does_not_break_predicate(self, tmp_path: Path) -> None:
+        """B1 escaping extended to the project value."""
+        db_path = tmp_path / "lancedb"
+        upsert_chunks(db_path, "o'reilly", "FEAT-001", "a.txt", [_chunk("a")], [[1.0, 0, 0, 0]])
+        upsert_chunks(db_path, "o'reilly", "FEAT-001", "a.txt", [_chunk("a")], [[1.0, 0, 0, 0]])
+
+        assert _row_count(db_path) == 1, "re-upsert should replace, not duplicate or throw"
+        hits = search_similar(db_path, [1.0, 0, 0, 0], limit=5, project="o'reilly")
+        assert len(hits) == 1
+
+
+class TestReindexDoesNotClobberOtherProjects:
+    """FEAT-007 AC8/AC18: `meridian index` used to drop the whole shared table."""
+
+    def _write_source(self, cfg, feat_id: str, name: str, body: str) -> None:
+        sources = cfg.specs_path / f"{feat_id}_demo" / "sources"
+        sources.mkdir(parents=True, exist_ok=True)
+        (sources / name).write_text(body)
+
+    def test_reindex_preserves_other_projects_chunks(
+        self, mock_cfg, other_cfg, monkeypatch
+    ) -> None:
+        from meridian import enrich as enrich_mod
+
+        monkeypatch.setattr(enrich_mod, "embed", lambda text, model=None: [1.0, 0.0, 0.0, 0.0])
+
+        # other-project's research is already in the shared index.
+        upsert_chunks(
+            mock_cfg.lancedb_path, "other-project", "FEAT-001", "theirs.txt",
+            [_chunk("theirs")], [[0.0, 1.0, 0.0, 0.0]],
+        )
+        assert _row_count(mock_cfg.lancedb_path) == 1
+
+        # test-project rebuilds its own index.
+        self._write_source(mock_cfg, "FEAT-001", "ours.txt", _chunk("ours"))
+        result = enrich_mod.reindex_all(mock_cfg)
+
+        assert result["sources"] == 1
+        assert not result["migrated"]
+
+        survivors = search_similar(
+            mock_cfg.lancedb_path, [0.0, 1.0, 0.0, 0.0], limit=10, project="other-project"
+        )
+        assert survivors, "reindex in one project must not delete another's chunks"
+        assert survivors[0]["source_name"] == "theirs.txt"
+
+    def test_reindex_replaces_only_own_rows(self, mock_cfg, monkeypatch) -> None:
+        from meridian import enrich as enrich_mod
+
+        monkeypatch.setattr(enrich_mod, "embed", lambda text, model=None: [1.0, 0.0, 0.0, 0.0])
+
+        # A stale row for this project that no longer has a backing source file.
+        upsert_chunks(
+            mock_cfg.lancedb_path, "test-project", "FEAT-099", "deleted.txt",
+            [_chunk("stale")], [[1.0, 0.0, 0.0, 0.0]],
+        )
+        self._write_source(mock_cfg, "FEAT-001", "ours.txt", _chunk("ours"))
+        enrich_mod.reindex_all(mock_cfg)
+
+        remaining = {
+            r["source_name"]
+            for r in search_similar(
+                mock_cfg.lancedb_path, [1.0, 0.0, 0.0, 0.0], limit=50, project="test-project"
+            )
+        }
+        assert remaining == {"ours.txt"}, "own stale rows should still be cleared"
+
+
+class TestLegacyIndexMigration:
+    """FEAT-007 AC9/AC10/AC11: a pre-project table is detected, not silently used."""
+
+    def _make_legacy_table(self, db_path: Path) -> None:
+        import lancedb
+        import pyarrow as pa
+
+        db_path.mkdir(parents=True, exist_ok=True)
+        db = lancedb.connect(str(db_path))
+        schema = pa.schema([
+            pa.field("feat_id", pa.string()),
+            pa.field("source_name", pa.string()),
+            pa.field("chunk_idx", pa.int32()),
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), 4)),
+        ])
+        table = db.create_table("chunks", schema=schema)
+        table.add([{
+            "feat_id": "FEAT-001", "source_name": "old.txt", "chunk_idx": 0,
+            "text": _chunk("old"), "vector": [1.0, 0.0, 0.0, 0.0],
+        }])
+
+    def test_search_raises_legacy_error(self, tmp_path: Path) -> None:
+        from meridian.enrich import LegacyIndexError
+
+        db_path = tmp_path / "lancedb"
+        self._make_legacy_table(db_path)
+
+        with pytest.raises(LegacyIndexError):
+            search_similar(db_path, [1.0, 0, 0, 0], limit=5, project="repo-a")
+
+    def test_upsert_raises_legacy_error(self, tmp_path: Path) -> None:
+        from meridian.enrich import LegacyIndexError
+
+        db_path = tmp_path / "lancedb"
+        self._make_legacy_table(db_path)
+
+        with pytest.raises(LegacyIndexError):
+            upsert_chunks(db_path, "repo-a", "FEAT-001", "a.txt", [_chunk("a")], [[1.0, 0, 0, 0]])
+
+    def test_legacy_error_is_runtime_error(self, tmp_path: Path) -> None:
+        """Existing CLI handlers catch RuntimeError — degrade, never traceback."""
+        from meridian.enrich import LegacyIndexError
+
+        assert issubclass(LegacyIndexError, RuntimeError)
+
+    def test_reindex_recreates_and_reports_migration(self, mock_cfg, monkeypatch) -> None:
+        from meridian import enrich as enrich_mod
+
+        monkeypatch.setattr(enrich_mod, "embed", lambda text, model=None: [1.0, 0.0, 0.0, 0.0])
+        self._make_legacy_table(mock_cfg.lancedb_path)
+
+        sources = mock_cfg.specs_path / "FEAT-001_demo" / "sources"
+        sources.mkdir(parents=True, exist_ok=True)
+        (sources / "ours.txt").write_text(_chunk("ours"))
+
+        result = enrich_mod.reindex_all(mock_cfg)
+
+        assert result["migrated"] is True
+        hits = search_similar(
+            mock_cfg.lancedb_path, [1.0, 0.0, 0.0, 0.0], limit=10, project="test-project"
+        )
+        assert {r["source_name"] for r in hits} == {"ours.txt"}
 
 
 class TestSearchDegradation:

@@ -208,7 +208,7 @@ class TestUpsertChunksSqlEscape:
 
         # This previously would raise or silently corrupt the delete predicate
         # because source_name contains a single quote.
-        upsert_chunks(lancedb_path, "FEAT-001", "O'Reilly_report.pdf", chunks, vectors)
+        upsert_chunks(lancedb_path, "test-project", "FEAT-001", "O'Reilly_report.pdf", chunks, vectors)
         # If we get here without a crash, the fix is in place.
 
 
