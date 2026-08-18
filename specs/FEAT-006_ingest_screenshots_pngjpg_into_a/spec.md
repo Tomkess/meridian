@@ -16,7 +16,7 @@ scheduler: null
 sources:
 - sources/screenshot-2026-08-18-15-40-59.png
 - sources/screenshot-2026-08-18-15-40-59.notes.md
-status: in-progress
+status: done
 tags: []
 updated: '2026-08-18'
 ---
@@ -81,7 +81,9 @@ Two ergonomics decisions came out of prototyping the real workflow (see Related 
       file produces the same names, so `upsert_chunks` replaces rather than duplicates).
 - [ ] Given no image data in the clipboard, when I run `--from-clipboard`, then it exits non-zero
       with a message saying the clipboard holds no image; given an image in the clipboard, then it is
-      written into `sources/` as `clipboard-<ISO-timestamp>.png` and ingested.
+      written into `sources/` as `clipboard-YYYY-MM-DD-HHMMSS.png` and ingested. The stamp is
+      dash-separated rather than ISO-with-`T` on purpose: `slug_image_name()` lowercases the stem, so
+      an ISO `T` would make the filename the CLI prints differ from the file it writes.
 - [ ] Given `--note-file` pointing at a sidecar whose `## Visual reading` section was written by an
       agent, when I run enrich, then that section is preserved verbatim, embedded alongside the
       notes, and the `- Described by:` header line records the author (e.g. `claude-opus-5 (agent)`).
@@ -108,6 +110,10 @@ Two ergonomics decisions came out of prototyping the real workflow (see Related 
       non-`.txt` sources.
 - [ ] Given a PNG passed to `meridian enrich` with no note flags in an **interactive** shell, when
       prompted, then the typed note is used; an empty note aborts without writing anything.
+- [ ] Given a `--note` or `--note-file` whose note text is blank or whitespace-only, when
+      `ingest_screenshot` runs, then it raises before writing anything — the library enforces the
+      "no note, no ingest" rule itself rather than trusting the CLI to have checked. *(Added during
+      implementation: the CLI guard alone would leave the library callable into a bad state.)*
 - [ ] Given a `.pdf`, `.txt`, or URL source, when I run `meridian enrich` as before, then behaviour
       is unchanged (no regression in the existing three paths).
 - [ ] Given the new `/meridian:enrich` skill, when the test suite runs, then
@@ -122,7 +128,7 @@ Two ergonomics decisions came out of prototyping the real workflow (see Related 
   - `--note/-n TEXT`, `--note-file PATH`
   - `--latest-screenshot` — resolve newest image from the OS screenshot directory instead of a
     positional source; prints the resolved filename + age
-  - `--from-clipboard` — write clipboard image to `sources/clipboard-<ISO>.png` (secondary path,
+  - `--from-clipboard` — write clipboard image to `sources/clipboard-YYYY-MM-DD-HHMMSS.png` (secondary path,
     guarded when the clipboard holds no image)
   - `--vision/--no-vision` (default off) — Ollama fallback describer, headless use only
 - New `ingest_screenshot()` path in `meridian/enrich.py` alongside `enrich_feature()`; image files
@@ -225,6 +231,23 @@ Empirical findings from prototyping the capture path (2026-08-18):
   GoodData scatter insight (`Earnings Yield vs FCF Yield`), plus the anomaly that "yield" metrics
   were unbounded (−1600, +3400) — the kind of detail that motivates preferring the agent path over a
   6 GB local vision model.
+
+Post-implementation validation against the live external tools (2026-08-18) — the mocked tests assert
+our own branching, so these are the findings only real calls could produce:
+
+- **Ollama `/api/generate` contract confirmed:** payload key `images` (base64 list) and response field
+  `.response` are both correct, verified with `gemma4:e4b`.
+- **The local model's reading was measurably worse, as predicted.** On the same scatter insight,
+  `gemma4:e4b` gave the X range as "-1750 to 0" (dropping the positive tail), placed an outlier at
+  "(-1500, -1000)" instead of (-1600, -1250), and concluded "All labeled elements and the data points
+  appear visible and accounted for" — i.e. it did not register the anomaly the screenshot was captured
+  for. This is the concrete basis for ADR 006's agent-first decision.
+- **`«class PNGf»` clipboard extraction works:** writes a valid 1610×876 PNG matching the source.
+- **Two defects found that every mocked test passed:** the clipboard filename printed by the CLI did
+  not match the file written (ISO `T` lowercased by the slug), and the skill's "do not diagnose root
+  causes" instruction was blunt enough to suppress a visible fact about metric definitions. Both
+  fixed; the first has a regression test. Lesson worth carrying: for a feature whose whole job is
+  talking to external tools, mocked coverage is necessary but never sufficient.
 
 ## Open Questions
 
