@@ -68,6 +68,17 @@ def _first_spec(project: Path) -> Path:
     return matches[0]
 
 
+def _package_version() -> str:
+    """Read the version from the package, not a literal.
+
+    A hardcoded version string turns every release into a test edit, which is
+    exactly the friction the release flow exists to remove.
+    """
+    from meridian import __version__
+
+    return __version__
+
+
 def _bundled_skill_count() -> int:
     """How many skills ship in the package — derived, so adding one cannot rot a test."""
     from meridian import skills
@@ -145,12 +156,12 @@ class TestVersion:
         r = run(["--version"], proj)
         assert r.returncode == 0
         assert "meridian" in r.stdout
-        assert "0.2.0" in r.stdout
+        assert _package_version() in r.stdout
 
     def test_version_short_flag(self, proj: Path) -> None:
         r = run(["-V"], proj)
         assert r.returncode == 0
-        assert "0.2.0" in r.stdout
+        assert _package_version() in r.stdout
 
     def test_help_exits_zero(self, proj: Path) -> None:
         r = run(["--help"], proj)

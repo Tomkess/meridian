@@ -60,6 +60,26 @@ meridian help                                # full manual
 | `/research <feat>` | Deep synthesis — findings, gaps, next research actions |
 | `/brief <feat> [source]` | One-page paper brief (≤ 550 words, A4) → summaries/ |
 
+## Releasing
+
+```bash
+./scripts/release.sh patch --dry-run     # preview (refuses unless main + clean + synced)
+./scripts/release.sh patch               # bump, verify, changelog, tag, GitHub release
+meridian install --all --pr              # propagate the new skills to tracked repos
+```
+
+Or run `/release` in Claude Code, which drives the same script and handles the
+changelog wording.
+
+The version lives in **one** place — `meridian/__init__.py`. `pyproject.toml` reads it
+via `[tool.setuptools.dynamic]`, so there is nothing to keep in sync.
+
+No GitHub Actions minutes are consumed: `gh release create` is a REST call. This repo
+is private and its Actions quota is unavailable, so the script's local pytest + ruff +
+mypy gate is the only verification that runs. Don't skip it.
+
+Installed from git, not PyPI — the name is taken there by an unrelated project.
+
 ## Stack
 
 - Embeddings: Ollama `mxbai-embed-large`

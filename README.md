@@ -49,12 +49,18 @@ Designed to be **installed into other projects**, not used standalone.
 ### 1. Install the package
 
 ```bash
-# recommended
-uv add meridian
+# recommended — installs the CLI as a standalone tool
+uv tool install git+https://github.com/Tomkess/meridian
 
-# or
-pip install meridian
+# a specific release
+uv tool install git+https://github.com/Tomkess/meridian@v0.2.0
+
+# working on Meridian itself
+uv tool install --editable .
 ```
+
+> Meridian is installed from git, not PyPI. The name `meridian` on PyPI belongs to an
+> unrelated project — `pip install meridian` gets you someone else's package.
 
 ### 2. Bootstrap your project
 
