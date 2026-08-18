@@ -44,12 +44,18 @@ def semantic_search(
     feat_id_filter: str | None = None,
     limit: int = 5,
     rerank: bool | None = None,  # None = auto (use reranker if available)
+    all_projects: bool = False,
 ) -> list[dict]:
     """
     Embed query → ANN (top-20) → optional BGE rerank → top-limit.
 
+    Scoped to ``cfg.project`` unless *all_projects* is set: the LanceDB store is
+    shared by every Meridian install, so an unscoped query returns other repos'
+    research as if it were this one's.
+
     Each result dict contains:
-        feat_id, source_name, chunk_idx, text, _distance, rerank_score (if reranked)
+        project, feat_id, source_name, chunk_idx, text, _distance,
+        rerank_score (if reranked)
     """
     if not cfg.lancedb_path.exists():
         return []
@@ -61,7 +67,8 @@ def semantic_search(
     use_rerank = _reranker_available() if rerank is None else rerank
     ann_limit = limit * 4 if use_rerank else limit
     raw = search_similar(cfg.lancedb_path, query_vec, limit=ann_limit,
-                         feat_id_filter=feat_id_filter)
+                         feat_id_filter=feat_id_filter,
+                         project=None if all_projects else cfg.project)
 
     if not raw:
         return []
@@ -86,6 +93,23 @@ def semantic_search(
     return raw[:limit]
 
 
+def result_label(result: dict, cfg: MeridianConfig | None = None) -> str:
+    """Human label for one hit, never mis-attributing a foreign row.
+
+    A feat_id only means something inside the project that wrote it. Resolving
+    another repo's FEAT-003 against the local specs directory would render it
+    with the local FEAT-003's name — wrong provenance presented as fact — so
+    foreign rows are labelled ``<project>/FEAT-003`` and left unresolved.
+    """
+    feat_id = result["feat_id"]
+    if cfg is None:
+        return feat_id
+    row_project = result.get("project")
+    if row_project and row_project != cfg.project:
+        return f"{row_project}/{feat_id}"
+    return feat_display_name(cfg.specs_path, feat_id)
+
+
 def format_results(
     results: list[dict],
     query: str,
@@ -105,11 +129,7 @@ def format_results(
         score = r.get("rerank_score", r.get("_distance"))
         score_str = f"  score={score:.3f}" if isinstance(score, float) else ""
         text_preview = r["text"][:300].replace("\n", " ").strip()
-        label = (
-            feat_display_name(cfg.specs_path, r["feat_id"])
-            if cfg is not None
-            else r["feat_id"]
-        )
+        label = result_label(r, cfg)
         lines.append(
             f"{i}. [{label}] {r['source_name']} chunk {r['chunk_idx']}{score_str}\n"
             f"   {text_preview}"
