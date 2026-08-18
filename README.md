@@ -67,7 +67,7 @@ meridian init
 This creates:
 - `.meridian.toml` — config file
 - `specs/` — feature directory with `VISION.md`, `STEERING.md`, `CYCLES.md`, `SKILLS.md`, `REGISTRY.md`, `goals/`, `decisions/`
-- `.claude/commands/meridian/` — 14 Claude Code skill files (namespaced as `/meridian:<name>`)
+- `.claude/commands/meridian/` — 15 Claude Code skill files (namespaced as `/meridian:<name>`)
 
 ### 3. Set up Ollama (for research features)
 
@@ -76,6 +76,15 @@ Required only for `meridian enrich` and `meridian search`:
 ```bash
 ollama serve
 ollama pull mxbai-embed-large
+```
+
+`meridian enrich --vision` additionally needs a multimodal model pulled and named in
+`.meridian.toml` as `ollama_vision_model`. It is a *fallback* describer for headless runs — when an
+agent can see the screenshot, prefer `/meridian:enrich`, which writes a far more accurate reading
+and needs no extra model:
+
+```bash
+ollama pull qwen2.5vl:7b        # then: ollama_vision_model = "qwen2.5vl:7b"
 ```
 
 ### 4. Check your setup
@@ -146,6 +155,11 @@ stateDiagram-v2
 | `meridian cycle feat-007 --clear` | Remove from cycle |
 | `meridian revive feat-007` | Revive abandoned feature → idea (preserves reason) |
 | `meridian enrich feat-007 report.pdf` | Ingest PDF / URL / file → LanceDB |
+| `meridian enrich feat-007 shot.png --note "what is wrong"` | Ingest a screenshot: image copied verbatim, notes embedded |
+| `meridian enrich feat-007 --latest-screenshot --note "…"` | Same, using the newest image in the OS screenshot dir |
+| `meridian enrich feat-007 --from-clipboard --note "…"` | Same, using the clipboard image (macOS) |
+| `meridian enrich feat-007 shot.png --note-file notes.md` | Take notes (and any agent visual reading) from a sidecar |
+| `meridian enrich feat-007 shot.png --note "…" --vision` | Fallback: add a local Ollama vision caption |
 | `meridian search "query"` | Semantic search across all enriched research |
 | `meridian index` | Rebuild REGISTRY.md + full vector index |
 | `meridian link-job feat-007 <job>` | Link a Databricks job to a feature |
@@ -173,6 +187,7 @@ stateDiagram-v2
 | `/roadmap` | VISION, goals, all specs | — (report only) |
 | `/challenge <subject>` | VISION, goals, spec | — (stress-test report) |
 | `/decision <title>` | `decisions/` | `decisions/NNN-slug.md` |
+| `/enrich <feat> "<note>"` | attached screenshot | `sources/<slug>.png` + `.notes.md` |
 | `/ask [question]` | enriched research chunks | — (RAG answer) |
 | `/research <feat>` | all sources, search index | — (synthesis report) |
 | `/brief <feat> [source]` | source file | `summaries/*-brief.md` |
