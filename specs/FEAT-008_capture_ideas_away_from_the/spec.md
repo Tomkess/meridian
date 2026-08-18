@@ -164,6 +164,42 @@ a directory of markdown files means anything that can write a file already works
 
 None ingested. Design rationale is captured in this spec's Summary.
 
+## Verification
+
+Manual end-to-end run on 2026-08-18, against the real machine-global home and the
+live shared index:
+
+- `meridian capture` from `/tmp` — a directory with no `.meridian.toml` anywhere up
+  the tree — succeeded (AC5). This is the path no other CLI test covers, since every
+  existing fixture runs inside a repo.
+- Five projects registered; `meridian inbox` from `/tmp` ranked a capture reading
+  *"annotate a screenshot and pull it into a feature's research corpus"* as:
+  `misc (0.56 · index)`, `gdc-mic-ai-evaluation (0.52 · index)`,
+  `portfolio-management (0.46 · purpose)`.
+  `misc` is the correct top hit — FEAT-006's screenshot chunks are attributed there,
+  not to `meridian`. Note the scores cluster tightly; ranking discriminates weakly on
+  a 178-chunk store, which is why the display says "likely"/"weak" rather than
+  presenting a winner.
+- `meridian inbox drop` moved the capture to `.icebox/`, inbox returned to empty.
+
+Two defects were found by running it rather than by testing it, both now fixed and
+covered:
+
+1. **Triage produced no suggestions outside a repo.** `suggest()` took a
+   `MeridianConfig`, so `load_config()` failing outside a repo silently disabled
+   ranking — in exactly the place the inbox is most likely to be read. It now takes
+   the store path and model directly, resolved by `home.search_context()`
+   (current repo → a registered project's config → documented defaults).
+2. **The test suite polluted the real global registry.** `meridian init` registers
+   its repo, and the subprocess CLI tests run the real binary, so every test run
+   appended pytest temp directories to `~/.meridian/projects.toml` — ten of them
+   before it was caught. Fixed by a session-scoped autouse fixture in
+   `tests/conftest.py` that sets `MERIDIAN_HOME` for the whole run, including
+   subprocesses, plus `tests/test_home_isolation.py` as a standing guard. The real
+   registry was cleaned by hand.
+
+Suite: 577 passed, ruff and mypy clean.
+
 ## Open Questions
 
 - Should `meridian status` show the pending inbox count, or does that leak global

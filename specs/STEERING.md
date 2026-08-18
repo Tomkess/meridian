@@ -17,6 +17,13 @@ before producing any output — treat these as hard constraints, not suggestions
   another repo's rows without rewriting its `REGISTRY.md` (which would leave an unrelated
   project with modified tracked files), use `meridian index --vectors-only`. To verify reindex
   behaviour in tests, point a `MeridianConfig` at a temp `lancedb_path`.
+- **Tests must never touch the real `~/.meridian`.** Set `MERIDIAN_HOME` to a temp path in
+  any test that reaches the global home — inbox, registry, or vector store. The shared store
+  under the real home has been destroyed once (2026-08-18) by a command run without thinking
+  about which scope it wrote to.
+- **Capture must work outside a repo.** `meridian/home.py` and anything reachable from
+  `meridian capture` must not import or call `load_config()`, which raises without a
+  `.meridian.toml`. Deciding a project is triage's job, not capture's.
 - **Never resolve a foreign `feat_id` against the local specs directory.** Feature IDs repeat
   across repos — FEAT-001 currently exists in three. Use `search.result_label()`, which
   namespaces rows from other projects as `<project>/FEAT-NNN` instead of borrowing a local

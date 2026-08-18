@@ -11,6 +11,11 @@ idea → spec → tasks → build → production. It is designed to be installed
 
 ```bash
 meridian status                              # full dashboard (task progress, deps, confidence)
+meridian capture "idea text"                 # capture into the global inbox (works anywhere)
+meridian inbox                               # triage pending captures, with suggested projects
+meridian inbox route <id> <project>          # file a capture into a project as a new idea
+meridian inbox drop <id>                     # set a capture aside (icebox, never deleted)
+meridian projects                            # list projects registered for routing
 meridian new "idea text" --appetite m        # quick-capture idea with appetite
 meridian new "idea" --goal goal-01           # capture linked to a goal
 meridian close <feat-id> --status <s>        # lifecycle transition
@@ -83,6 +88,27 @@ token_env = "DATABRICKS_TOKEN"
 shares. `project` is what keeps repos from reading and overwriting each other's
 research; it defaults to a slug of the repo directory name. Two checkouts with the
 same directory name get the same slug — set `project` explicitly to separate them.
+
+## Idea inbox
+
+Capture and triage are deliberately separate. Capture time is the worst moment to
+decide which project an idea belongs to — on a phone the target repo is unknown and
+expensive to specify, and that cost is why ideas go uncaptured.
+
+- **Capture** is project-agnostic and needs no repo: `meridian capture "…"` writes one
+  markdown file to `~/.meridian/inbox/`. Any tool that can write a file there works —
+  an iOS Shortcut, a sync folder, an email rule.
+- **Triage** is batched, at the keyboard: `meridian inbox` lists what accumulated and
+  ranks candidate projects by embedding each capture against the shared index.
+- **Nothing auto-files.** A human always names the target. An inbox that files itself
+  produces stub specs nobody kills.
+
+A capture file needs no frontmatter — a bare line of text is valid. Optional
+frontmatter (`project`, `goal`, `appetite`, `created`) is honoured, and an inline
+`#project-slug` hashtag is an explicit routing hint that skips ranking.
+
+`~/.meridian/projects.toml` maps slugs to repo paths and is written by `meridian init`.
+Triage runs from outside any repo, so it cannot find projects without it.
 
 ## Specs structure
 

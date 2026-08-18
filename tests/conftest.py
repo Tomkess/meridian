@@ -1,9 +1,34 @@
 """Shared fixtures for the Meridian test suite."""
+import os
 from pathlib import Path
 
 import pytest
 
 from meridian.config import MeridianConfig
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_meridian_home(tmp_path_factory) -> Path:
+    """Point MERIDIAN_HOME at a throwaway directory for the whole session.
+
+    Autouse and session-scoped because the damage is silent and global: the
+    subprocess CLI tests run the real binary, which inherits this process's
+    environment, and `meridian init` registers the repo it just created. Without
+    this, running the test suite writes pytest tmp directories into the
+    developer's real ~/.meridian/projects.toml (observed 2026-08-18) and any
+    future global write would land there too.
+
+    Sets the variable in os.environ directly rather than via monkeypatch so it
+    survives into subprocesses spawned by any test.
+    """
+    home = tmp_path_factory.mktemp("meridian-home")
+    previous = os.environ.get("MERIDIAN_HOME")
+    os.environ["MERIDIAN_HOME"] = str(home)
+    yield home
+    if previous is None:
+        os.environ.pop("MERIDIAN_HOME", None)
+    else:
+        os.environ["MERIDIAN_HOME"] = previous
 
 
 @pytest.fixture
