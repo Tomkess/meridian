@@ -13,6 +13,11 @@ class MeridianConfig:
     databricks_token_env: str
     databricks_status_timeout: int  # P5: seconds to wait per job-status fetch
     root: Path  # repo root where .meridian.toml lives
+    # FEAT-006: optional Ollama vision model used as the *fallback* describer for
+    # `meridian enrich --vision`. Empty by default: the primary describer is the
+    # agent that can already see the screenshot, so a concrete default would only
+    # produce "model not found" warnings on machines that never pull one.
+    ollama_vision_model: str = ""
 
 
 def _find_config_file(start: Path) -> Path | None:
@@ -51,4 +56,5 @@ def load_config(cwd: Path | None = None) -> MeridianConfig:
         databricks_token_env=databricks_section.get("token_env", "DATABRICKS_TOKEN"),
         databricks_status_timeout=int(databricks_section.get("status_timeout", 8)),
         root=root,
+        ollama_vision_model=meridian_section.get("ollama_vision_model", ""),
     )

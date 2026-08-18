@@ -68,6 +68,13 @@ def _first_spec(project: Path) -> Path:
     return matches[0]
 
 
+def _bundled_skill_count() -> int:
+    """How many skills ship in the package — derived, so adding one cannot rot a test."""
+    from meridian import skills
+
+    return len(list((Path(skills.__file__).parent / "commands").glob("*.md")))
+
+
 def _load_fm(spec_path: Path) -> dict:
     """Load frontmatter from spec.md and return as dict."""
     post = frontmatter.loads(spec_path.read_text())
@@ -494,7 +501,8 @@ class TestInit:
         commands = tmp_path / ".claude" / "commands" / "meridian"
         assert commands.is_dir()
         skills = list(commands.glob("*.md"))
-        assert len(skills) == 14, f"Expected 14 skill files, got {len(skills)}"
+        expected = _bundled_skill_count()
+        assert len(skills) == expected, f"Expected {expected} skill files, got {len(skills)}"
 
     def test_toml_has_required_keys(self, tmp_path: Path) -> None:
         run(["init", "--path", str(tmp_path)], tmp_path)
@@ -549,7 +557,8 @@ class TestInstall:
         dest = tmp_path / ".claude" / "commands" / "meridian"
         assert dest.is_dir()
         skills = list(dest.glob("*.md"))
-        assert len(skills) == 14, f"Expected 14 skill files, got {len(skills)}"
+        expected = _bundled_skill_count()
+        assert len(skills) == expected, f"Expected {expected} skill files, got {len(skills)}"
 
     def test_reports_namespaced_invocation(self, tmp_path: Path) -> None:
         r = run(["install", "--project", "--path", str(tmp_path)], tmp_path)
@@ -576,7 +585,7 @@ class TestInstall:
         r = run(["install"], tmp_path, env_extra={"HOME": str(fake_home)})
         assert r.returncode == 0
         dest = fake_home / ".claude" / "commands" / "meridian"
-        assert len(list(dest.glob("*.md"))) == 14
+        assert len(list(dest.glob("*.md"))) == _bundled_skill_count()
 
 
 # ── meridian guide ───────────────────────────────────────────────────────── #
@@ -614,3 +623,197 @@ class TestIndex:
         run(["index"], proj_with_idea)
         # Registry may be rebuilt by the CLI regardless of embedding step
         # Just assert no crash
+
+
+# ── enrich: screenshots (FEAT-006) ───────────────────────────────────────── #
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"pretend-pixels" * 40
+
+
+def _png(directory: Path, name: str = "kpi.png") -> Path:
+    path = directory / name
+    path.write_bytes(PNG_BYTES)
+    return path
+
+
+def _sources_dir(project: Path) -> Path:
+    return _first_spec(project).parent / "sources"
+
+
+def _sources_files(project: Path) -> list[Path]:
+    """Files inside sources/ — the dir itself is scaffolded by `meridian new`."""
+    sources = _sources_dir(project)
+    return sorted(p for p in sources.iterdir() if p.is_file()) if sources.exists() else []
+
+
+class TestEnrichScreenshotRefusals:
+    """An image with no notes must never be silently embedded.
+
+    These run through the real binary, so stdin is not a tty — the
+    non-interactive refusal path.
+    """
+
+    def test_missing_note_exits_nonzero_naming_both_flags(self, proj_with_idea: Path):
+        png = _png(proj_with_idea)
+        r = run(["enrich", "feat-001", str(png)], proj_with_idea)
+        assert r.returncode != 0
+        combined = r.stdout + r.stderr
+        assert "--note" in combined
+        assert "--note-file" in combined
+
+    def test_missing_note_writes_nothing(self, proj_with_idea: Path):
+        png = _png(proj_with_idea)
+        run(["enrich", "feat-001", str(png)], proj_with_idea)
+        assert _sources_files(proj_with_idea) == []
+        assert _load_fm(_first_spec(proj_with_idea)).get("sources") in (None, [])
+
+    def test_capture_flags_are_mutually_exclusive(self, proj_with_idea: Path):
+        r = run(
+            ["enrich", "feat-001", "--latest-screenshot", "--from-clipboard", "-n", "x"],
+            proj_with_idea,
+        )
+        assert r.returncode != 0
+        assert "mutually exclusive" in (r.stdout + r.stderr)
+
+    def test_capture_flag_conflicts_with_positional_source(self, proj_with_idea: Path):
+        png = _png(proj_with_idea)
+        r = run(
+            ["enrich", "feat-001", str(png), "--latest-screenshot", "-n", "x"],
+            proj_with_idea,
+        )
+        assert r.returncode != 0
+        assert "not both" in (r.stdout + r.stderr)
+        assert _sources_files(proj_with_idea) == []
+
+    def test_no_source_and_no_capture_flag_is_refused(self, proj_with_idea: Path):
+        r = run(["enrich", "feat-001"], proj_with_idea)
+        assert r.returncode != 0
+        assert "--latest-screenshot" in (r.stdout + r.stderr)
+
+    def test_note_and_note_file_together_refused(self, proj_with_idea: Path):
+        png = _png(proj_with_idea)
+        notes = proj_with_idea / "n.md"
+        notes.write_text("prose")
+        r = run(
+            ["enrich", "feat-001", str(png), "-n", "x", "--note-file", str(notes)],
+            proj_with_idea,
+        )
+        assert r.returncode != 0
+        assert "not both" in (r.stdout + r.stderr)
+
+
+class TestEnrichScreenshotInProcess:
+    """Paths needing patched capture/embed seams, driven through CliRunner."""
+
+    def _runner(self):
+        from typer.testing import CliRunner
+
+        return CliRunner()
+
+    def _invoke(self, monkeypatch, proj: Path, args: list[str], **kwargs):
+        from meridian.cli import app
+
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr("meridian.enrich.embed", lambda *a, **k: [0.1, 0.2, 0.3, 0.4])
+        return self._runner().invoke(app, args, **kwargs)
+
+    def test_note_flag_ingests_image_and_sidecar(self, monkeypatch, proj_with_idea: Path):
+        png = _png(proj_with_idea)
+        result = self._invoke(
+            monkeypatch, proj_with_idea,
+            ["enrich", "feat-001", str(png), "--note", "KPI tile shows 0"],
+        )
+        assert result.exit_code == 0, result.output
+        sources = _sources_dir(proj_with_idea)
+        assert (sources / "kpi.png").read_bytes() == PNG_BYTES
+        assert "KPI tile shows 0" in (sources / "kpi.notes.md").read_text()
+        assert "kpi.notes.md" in result.output
+
+    def test_prompted_note_is_used(self, monkeypatch, proj_with_idea: Path):
+        png = _png(proj_with_idea)
+        monkeypatch.setattr("meridian.cli._stdin_is_tty", lambda: True)
+        result = self._invoke(
+            monkeypatch, proj_with_idea, ["enrich", "feat-001", str(png)],
+            input="tile shows 0\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert "tile shows 0" in (_sources_dir(proj_with_idea) / "kpi.notes.md").read_text()
+
+    def test_empty_prompt_aborts_writing_nothing(self, monkeypatch, proj_with_idea: Path):
+        png = _png(proj_with_idea)
+        monkeypatch.setattr("meridian.cli._stdin_is_tty", lambda: True)
+        result = self._invoke(
+            monkeypatch, proj_with_idea, ["enrich", "feat-001", str(png)], input="\n"
+        )
+        assert result.exit_code != 0
+        assert "Aborted" in result.output
+        assert _sources_files(proj_with_idea) == []
+
+    def test_latest_screenshot_prints_resolved_name_and_age(
+        self, monkeypatch, proj_with_idea: Path
+    ):
+        shot = _png(proj_with_idea, "Screenshot 2026-08-18 at 15.40.59.png")
+        monkeypatch.setattr(
+            "meridian.capture.latest_screenshot", lambda directory=None: (shot, 42.0)
+        )
+        result = self._invoke(
+            monkeypatch, proj_with_idea,
+            ["enrich", "feat-001", "--latest-screenshot", "-n", "tile shows 0"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Screenshot 2026-08-18 at 15.40.59.png" in result.output
+        assert "just now" in result.output
+        # Stored under the deterministic slug, not the spaced original name.
+        assert (_sources_dir(proj_with_idea) / "screenshot-2026-08-18-15-40-59.png").exists()
+
+    def test_stale_screenshot_warns_but_proceeds(self, monkeypatch, proj_with_idea: Path):
+        shot = _png(proj_with_idea)
+        monkeypatch.setattr(
+            "meridian.capture.latest_screenshot", lambda directory=None: (shot, 3600.0)
+        )
+        result = self._invoke(
+            monkeypatch, proj_with_idea,
+            ["enrich", "feat-001", "--latest-screenshot", "-n", "tile shows 0"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "60m old" in result.output
+        assert (_sources_dir(proj_with_idea) / "kpi.notes.md").exists()
+
+    def test_no_screenshots_found_exits_nonzero(self, monkeypatch, proj_with_idea: Path):
+        def boom(directory=None):
+            raise RuntimeError("No images found in /Users/x/Desktop.")
+
+        monkeypatch.setattr("meridian.capture.latest_screenshot", boom)
+        result = self._invoke(
+            monkeypatch, proj_with_idea,
+            ["enrich", "feat-001", "--latest-screenshot", "-n", "x"],
+        )
+        assert result.exit_code != 0
+        assert "Desktop" in result.output
+
+    def test_clipboard_without_image_exits_nonzero(self, monkeypatch, proj_with_idea: Path):
+        def boom(dest):
+            raise RuntimeError("Clipboard holds no image. Copy a screenshot first")
+
+        monkeypatch.setattr("meridian.capture.clipboard_image", boom)
+        result = self._invoke(
+            monkeypatch, proj_with_idea,
+            ["enrich", "feat-001", "--from-clipboard", "-n", "x"],
+        )
+        assert result.exit_code != 0
+        assert "no image" in result.output
+
+    def test_note_flag_on_text_source_warns_but_succeeds(
+        self, monkeypatch, proj_with_idea: Path
+    ):
+        doc = proj_with_idea / "paper.txt"
+        doc.write_text(" ".join(f"w{i}" for i in range(300)))
+        result = self._invoke(
+            monkeypatch, proj_with_idea,
+            ["enrich", "feat-001", str(doc), "--note", "ignored here"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "images only" in result.output
+        assert (_sources_dir(proj_with_idea) / "paper.txt").exists()
+        # No sidecar for a text source.
+        assert not (_sources_dir(proj_with_idea) / "paper.notes.md").exists()

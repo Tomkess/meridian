@@ -1,7 +1,10 @@
 import logging
 import os
 import re
+import sys
+import tempfile
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -504,17 +507,150 @@ def cycle(
 # enrich
 # --------------------------------------------------------------------------- #
 
+_STALE_SCREENSHOT_SECONDS = 600  # warn above this, never refuse
+
+
+def _stdin_is_tty() -> bool:
+    """Whether we can prompt the user. A seam: test runners swap sys.stdin out."""
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _resolve_capture(latest_screenshot_flag: bool, from_clipboard: bool) -> str:
+    """Turn a capture flag into a concrete image path, reporting what was picked.
+
+    A silently-chosen screenshot is the worst failure mode here, so the resolved
+    filename and its age are always printed before anything is embedded.
+    """
+    from meridian.capture import clipboard_image, latest_screenshot
+
+    if latest_screenshot_flag:
+        path, age = latest_screenshot()
+        minutes = int(age // 60)
+        age_label = f"{minutes}m old" if minutes else "just now"
+        console.print(
+            f"[dim]Using[/dim] [bold]{path.name}[/bold] [dim]({age_label}) "
+            f"from {path.parent}[/dim]"
+        )
+        if age > _STALE_SCREENSHOT_SECONDS:
+            console.print(
+                f"[yellow]⚠[/yellow]  that screenshot is {minutes}m old — "
+                f"take a fresh one if this is not the right image."
+            )
+        return str(path)
+
+    stamp = datetime.now().strftime("%Y-%m-%dT%H%M%S")
+    dest = Path(tempfile.gettempdir()) / f"clipboard-{stamp}.png"
+    path = clipboard_image(dest)
+    console.print(f"[dim]Using clipboard image →[/dim] [bold]{path.name}[/bold]")
+    return str(path)
+
+
 @app.command()
 def enrich(
     feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-007)"),
-    source: str = typer.Argument(..., help="Path to PDF/text file or URL"),
+    source: str | None = typer.Argument(
+        None,
+        help="Path to PDF/text/image file or URL (omit when using a capture flag)",
+    ),
+    note: str | None = typer.Option(
+        None, "--note", "-n",
+        help="Note describing the screenshot (required for image sources)",
+    ),
+    note_file: Path | None = typer.Option(
+        None, "--note-file",
+        help="Read the note (and any existing visual reading) from a sidecar file",
+    ),
+    latest_screenshot: bool = typer.Option(
+        False, "--latest-screenshot",
+        help="Ingest the newest image from the OS screenshot directory",
+    ),
+    from_clipboard: bool = typer.Option(
+        False, "--from-clipboard",
+        help="Ingest the image currently in the clipboard (macOS)",
+    ),
+    vision: bool = typer.Option(
+        False, "--vision/--no-vision",
+        help="Fallback: describe the image with the configured Ollama vision model",
+    ),
 ):
-    """Ingest a PDF, URL, or text file into a feature's research corpus."""
-    from meridian.enrich import enrich_feature
+    """Ingest a PDF, URL, text file, or annotated screenshot into a feature's research corpus."""
+    from meridian.enrich import enrich_feature, ingest_screenshot, is_image_source
+
+    # ── Argument validation, before touching disk ───────────────────────────
+    if latest_screenshot and from_clipboard:
+        console.print("[red]Error:[/red] --latest-screenshot and --from-clipboard are mutually exclusive.")
+        raise typer.Exit(1)
+    if (latest_screenshot or from_clipboard) and source:
+        flag = "--latest-screenshot" if latest_screenshot else "--from-clipboard"
+        console.print(
+            f"[red]Error:[/red] pass either a source path or {flag}, not both."
+        )
+        raise typer.Exit(1)
+    if not source and not (latest_screenshot or from_clipboard):
+        console.print(
+            "[red]Error:[/red] give a source (PDF/URL/text/image path) or use "
+            "--latest-screenshot / --from-clipboard."
+        )
+        raise typer.Exit(1)
+    if note is not None and note_file is not None:
+        console.print("[red]Error:[/red] pass either --note or --note-file, not both.")
+        raise typer.Exit(1)
+
     cfg = _config()
-    with console.status(f"Extracting and embedding [bold]{source}[/bold]…"):
+
+    # ── Capture ────────────────────────────────────────────────────────────
+    if latest_screenshot or from_clipboard:
         try:
-            result = enrich_feature(cfg, feature_id, source)
+            source = _resolve_capture(latest_screenshot, from_clipboard)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+
+    assert source is not None  # validation above guarantees this
+
+    # ── Non-image sources keep the original path, untouched ────────────────
+    if not is_image_source(source):
+        if note or note_file or vision:
+            console.print(
+                "[yellow]⚠[/yellow]  --note/--note-file/--vision apply to images only — "
+                "ignored for this source."
+            )
+        with console.status(f"Extracting and embedding [bold]{source}[/bold]…"):
+            try:
+                result = enrich_feature(cfg, feature_id, source)
+            except FileNotFoundError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                raise typer.Exit(1)
+            except RuntimeError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                raise typer.Exit(1)
+        _report_enrich(result)
+        return
+
+    # ── Screenshot path: notes are mandatory ───────────────────────────────
+    if note is None and note_file is None:
+        if not _stdin_is_tty():
+            console.print(
+                "[red]Error:[/red] an image needs notes to be searchable.\n"
+                "  Pass [bold]--note[/bold] \"what is wrong\" or "
+                "[bold]--note-file[/bold] <path>."
+            )
+            raise typer.Exit(1)
+        typed = typer.prompt("Note describing this screenshot", default="")
+        if not typed.strip():
+            console.print("[yellow]Aborted[/yellow] — empty note, nothing was written.")
+            raise typer.Exit(1)
+        note = typed
+
+    with console.status(f"Embedding notes for [bold]{Path(source).name}[/bold]…"):
+        try:
+            result = ingest_screenshot(
+                cfg, feature_id, source,
+                note=note, note_file=note_file, vision=vision,
+            )
         except FileNotFoundError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)
@@ -522,16 +658,28 @@ def enrich(
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)
 
+    for warning in result.get("warnings", []):
+        console.print(f"[yellow]⚠[/yellow]  {warning}")
+    _report_enrich(result)
+
+
+def _report_enrich(result: dict) -> None:
+    """Print the success (or 0-chunk) line for either enrich path."""
     chunks = result["chunks"]
+    target = result["source"]
+    if result.get("sidecar"):
+        target = f"{result['source']} + {result['sidecar']}"
+    described = f" · described by {result['described_by']}" if result.get("described_by") else ""
+
     if chunks == 0:
         console.print(
-            f"[yellow]⚠[/yellow]  [bold]{result['feat_id']}[/bold] ← {result['source']} "
+            f"[yellow]⚠[/yellow]  [bold]{result['feat_id']}[/bold] ← {target} "
             f"([dim]0 chunks — source may be too short or empty[/dim])"
         )
     else:
         console.print(
-            f"[green]✓[/green] [bold]{result['feat_id']}[/bold] ← {result['source']} "
-            f"([dim]{chunks} chunks embedded[/dim])"
+            f"[green]✓[/green] [bold]{result['feat_id']}[/bold] ← {target} "
+            f"([dim]{chunks} chunks embedded{described}[/dim])"
         )
 
 
@@ -844,6 +992,7 @@ def init_project(
         'lancedb_path   = "~/.meridian/lancedb"\n'
         'ollama_model   = "mxbai-embed-large"\n'
         'reranker_model = "BAAI/bge-reranker-v2-m3"\n'
+        'ollama_vision_model = ""   # optional: fallback describer for `enrich --vision`\n'
         "\n"
         "[databricks]\n"
         'host      = ""\n'
@@ -1133,6 +1282,16 @@ def help_cmd():
          'Remove feature from any cycle'),
         ('meridian enrich feat-007 report.pdf',
          'Ingest PDF/URL/file into feature research corpus'),
+        ('meridian enrich feat-007 shot.png --note "what is wrong"',
+         'Ingest a screenshot + notes sidecar (image copied, notes embedded)'),
+        ('meridian enrich feat-007 --latest-screenshot --note "…"',
+         'Same, taking the newest image from the OS screenshot directory'),
+        ('meridian enrich feat-007 --from-clipboard --note "…"',
+         'Same, taking the image from the clipboard (macOS)'),
+        ('meridian enrich feat-007 shot.png --note-file notes.md',
+         'Read notes (and any agent visual reading) from a sidecar file'),
+        ('meridian enrich feat-007 shot.png --note "…" --vision',
+         'Fallback: also describe the image with the configured Ollama vision model'),
         ('meridian search "drift detection"',
          'Semantic search across all research (+ --feat, --limit, --no-rerank)'),
         ('meridian index',
@@ -1227,6 +1386,7 @@ def help_cmd():
         "  lancedb_path   = \"~/.meridian/lancedb\"        # vector store (global by default)\n"
         "  ollama_model   = \"mxbai-embed-large\"          # embedding model\n"
         "  reranker_model = \"BAAI/bge-reranker-v2-m3\"   # optional cross-encoder\n"
+        "  ollama_vision_model = \"\"                     # optional: fallback screenshot describer\n"
         "\n"
         r"  \[databricks]" + "\n"
         "  host      = \"https://your-workspace.azuredatabricks.net\"\n"
@@ -1253,7 +1413,7 @@ def help_cmd():
         "    breakdown.md           ← technical design\n"
         "    tasks.md               ← atomic work units (AI-executable)\n"
         "    plan.md                ← phased strategy (optional)\n"
-        "    sources/               ← raw PDFs, text, downloaded pages\n"
+        "    sources/               ← raw PDFs, text, pages, screenshots + .notes.md sidecars\n"
         "    summaries/             ← AI-generated summaries"
         "[/dim]"
     )

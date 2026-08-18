@@ -21,6 +21,11 @@ meridian close <feat-id> --confidence high   # update problem confidence (low|me
 meridian cycle <feat-id> --set 2026-Q2       # assign to planning cycle (warns if overloaded)
 meridian cycle <feat-id> --clear             # remove from cycle
 meridian enrich <feat-id> <source>           # add research (PDF/URL/file)
+meridian enrich <feat-id> <image> --note "what is wrong"      # ingest annotated screenshot
+meridian enrich <feat-id> --latest-screenshot --note "..."    # grab newest OS screenshot
+meridian enrich <feat-id> --from-clipboard --note "..."       # grab clipboard image (macOS)
+meridian enrich <feat-id> <image> --note-file <path>          # notes (+ visual reading) from a sidecar
+meridian enrich <feat-id> <image> --note "..." --vision       # add local Ollama caption (fallback)
 meridian search "query"                      # semantic search across research
 meridian index                               # rebuild vector index
 meridian transition --from-merge <branch>    # auto-transition after git merge (branch: feat-NNN/slug)
@@ -43,6 +48,7 @@ meridian help                                # full manual
 | `/roadmap` | Goals × features × gaps |
 | `/challenge` | Stress-test against vision |
 | `/decision` | Write ADR |
+| `/enrich <feat> "<note>"` | Ingest an attached screenshot + notes + agent visual reading |
 | `/ask [question]` | RAG Q&A — answer a question from enriched research |
 | `/research <feat>` | Deep synthesis — findings, gaps, next research actions |
 | `/brief <feat> [source]` | One-page paper brief (≤ 550 words, A4) → summaries/ |

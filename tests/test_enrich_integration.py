@@ -18,10 +18,13 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from meridian.config import MeridianConfig
 from meridian.enrich import (
     embed,
     enrich_feature,
+    ingest_screenshot,
     reindex_all,
     search_similar,
     upsert_chunks,
@@ -233,3 +236,324 @@ class TestReindexAll:
 
         # Drop-and-rebuild must produce the same row count, not accumulate.
         assert first["chunks"] == second["chunks"]
+
+
+# ── Screenshot ingest end-to-end (FEAT-006) ──────────────────────────────── #
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"pretend-pixels" * 40
+
+
+def _embed_stub(*_a, **_k):
+    return [0.1, 0.2, 0.3, 0.4]
+
+
+class TestIngestScreenshot:
+    def _make_spec(self, specs_dir: Path, feat: str = "FEAT-006") -> Path:
+        feat_dir = specs_dir / f"{feat}_screenshots"
+        feat_dir.mkdir(parents=True)
+        (feat_dir / "spec.md").write_text(
+            f"---\nid: {feat.lower()}\nname: Shots\nstatus: idea\nsources: []\n---\nBody.\n"
+        )
+        return feat_dir
+
+    def _png(self, tmp_path: Path, name: str = "kpi.png") -> Path:
+        png = tmp_path / name
+        png.write_bytes(PNG_BYTES)
+        return png
+
+    def test_image_copied_byte_identical_without_txt_sibling(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        import hashlib
+
+        feat_dir = self._make_spec(mock_cfg.specs_path)
+        png = self._png(tmp_path)
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            result = ingest_screenshot(mock_cfg, "feat-006", png, note="KPI tile shows 0")
+
+        copied = feat_dir / "sources" / "kpi.png"
+        assert hashlib.sha256(copied.read_bytes()).hexdigest() == \
+               hashlib.sha256(PNG_BYTES).hexdigest()
+        # save_source's .txt companion would be the binary-as-text corruption.
+        assert not (feat_dir / "sources" / "kpi.txt").exists()
+        assert result["sidecar"] == "kpi.notes.md"
+        assert result["chunks"] >= 1
+
+    def test_sidecar_holds_the_note(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._make_spec(mock_cfg.specs_path)
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            ingest_screenshot(mock_cfg, "feat-006", self._png(tmp_path), note="KPI tile shows 0")
+
+        sidecar = (feat_dir / "sources" / "kpi.notes.md").read_text()
+        assert "KPI tile shows 0" in sidecar
+        assert "- Image: sources/kpi.png" in sidecar
+
+    def test_chunk_retrievable_and_carries_image_path(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        self._make_spec(mock_cfg.specs_path)
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            ingest_screenshot(mock_cfg, "feat-006", self._png(tmp_path), note="KPI tile shows 0")
+
+        hits = search_similar(
+            mock_cfg.lancedb_path, [0.1, 0.2, 0.3, 0.4], feat_id_filter="feat-006"
+        )
+        assert hits
+        assert hits[0]["source_name"] == "kpi.notes.md"
+        assert "sources/kpi.png" in hits[0]["text"]
+
+    def test_frontmatter_lists_image_and_sidecar(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._make_spec(mock_cfg.specs_path)
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            ingest_screenshot(mock_cfg, "feat-006", self._png(tmp_path), note="tile shows 0")
+
+        from meridian.specs import load_spec
+
+        sources = load_spec(feat_dir / "spec.md")["sources"]
+        assert "sources/kpi.png" in sources
+        assert "sources/kpi.notes.md" in sources
+
+    def test_macos_filename_is_slugified_everywhere(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._make_spec(mock_cfg.specs_path)
+        png = self._png(tmp_path, "Screenshot 2026-08-18 at 15.40.59.png")
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            result = ingest_screenshot(mock_cfg, "feat-006", png, note="tile shows 0")
+
+        slug = "screenshot-2026-08-18-15-40-59"
+        assert result["source"] == f"{slug}.png"
+        assert (feat_dir / "sources" / f"{slug}.png").exists()
+        assert (feat_dir / "sources" / f"{slug}.notes.md").exists()
+
+        from meridian.specs import load_spec
+
+        sources = load_spec(feat_dir / "spec.md")["sources"]
+        assert f"sources/{slug}.png" in sources
+
+        hits = search_similar(
+            mock_cfg.lancedb_path, [0.1, 0.2, 0.3, 0.4], feat_id_filter="feat-006"
+        )
+        assert hits[0]["source_name"] == f"{slug}.notes.md"
+
+    def test_missing_note_raises_and_writes_nothing(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._make_spec(mock_cfg.specs_path)
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            with pytest.raises(RuntimeError, match="--note"):
+                ingest_screenshot(mock_cfg, "feat-006", self._png(tmp_path))
+        assert not (feat_dir / "sources").exists()
+
+    def test_empty_note_raises(self, mock_cfg: MeridianConfig, tmp_path: Path) -> None:
+        self._make_spec(mock_cfg.specs_path)
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            with pytest.raises(RuntimeError, match="empty"):
+                ingest_screenshot(mock_cfg, "feat-006", self._png(tmp_path), note="   ")
+
+    def test_agent_reading_preserved_verbatim(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        from meridian.enrich import render_sidecar
+
+        feat_dir = self._make_spec(mock_cfg.specs_path)
+        reading = "Nine points; four outliers dominate the axis at -1600 and +3400."
+        scratch = tmp_path / "kpi.notes.md"
+        scratch.write_text(render_sidecar(
+            "kpi.png", "FEAT-006", "yields are unbounded",
+            reading=reading, described_by="claude-opus-5 (agent)",
+        ))
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            result = ingest_screenshot(
+                mock_cfg, "feat-006", self._png(tmp_path), note_file=scratch
+            )
+
+        written = (feat_dir / "sources" / "kpi.notes.md").read_text()
+        assert reading in written
+        assert "- Described by: claude-opus-5 (agent)" in written
+        assert result["described_by"] == "claude-opus-5 (agent)"
+
+        hits = search_similar(
+            mock_cfg.lancedb_path, [0.1, 0.2, 0.3, 0.4], feat_id_filter="feat-006", limit=50
+        )
+        assert any("outliers dominate" in h["text"] for h in hits)
+
+    def test_vision_skipped_when_reading_already_exists(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        from meridian.enrich import render_sidecar
+
+        self._make_spec(mock_cfg.specs_path)
+        scratch = tmp_path / "kpi.notes.md"
+        scratch.write_text(render_sidecar(
+            "kpi.png", "FEAT-006", "note", reading="agent saw it",
+            described_by="claude-opus-5 (agent)",
+        ))
+        mock_cfg.ollama_vision_model = "qwen2.5vl:7b"
+        caption = MagicMock()
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub), \
+             patch("meridian.enrich.caption_image", caption):
+            result = ingest_screenshot(
+                mock_cfg, "feat-006", self._png(tmp_path), note_file=scratch, vision=True
+            )
+
+        caption.assert_not_called()
+        assert any("skipped" in w for w in result["warnings"])
+        assert result["described_by"] == "claude-opus-5 (agent)"
+
+    def test_vision_caption_persisted_and_embedded(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._make_spec(mock_cfg.specs_path)
+        mock_cfg.ollama_vision_model = "qwen2.5vl:7b"
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub), \
+             patch("meridian.enrich.caption_image", return_value="A scatter plot with outliers."):
+            result = ingest_screenshot(
+                mock_cfg, "feat-006", self._png(tmp_path), note="tile shows 0", vision=True
+            )
+
+        sidecar = (feat_dir / "sources" / "kpi.notes.md").read_text()
+        assert "## Visual reading" in sidecar
+        assert "A scatter plot with outliers." in sidecar
+        assert "- Described by: ollama:qwen2.5vl:7b" in sidecar
+        assert result["described_by"] == "ollama:qwen2.5vl:7b"
+
+        hits = search_similar(
+            mock_cfg.lancedb_path, [0.1, 0.2, 0.3, 0.4], feat_id_filter="feat-006", limit=50
+        )
+        assert any("scatter plot with outliers" in h["text"] for h in hits)
+
+    def test_vision_failure_degrades_to_warning(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._make_spec(mock_cfg.specs_path)
+        mock_cfg.ollama_vision_model = "qwen2.5vl:7b"
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub), \
+             patch("meridian.enrich.caption_image",
+                   side_effect=RuntimeError("Cannot connect to Ollama at localhost")):
+            result = ingest_screenshot(
+                mock_cfg, "feat-006", self._png(tmp_path), note="tile shows 0", vision=True
+            )
+
+        # The note survives — a describer failure must never lose research.
+        assert result["chunks"] >= 1
+        assert (feat_dir / "sources" / "kpi.png").exists()
+        sidecar = (feat_dir / "sources" / "kpi.notes.md").read_text()
+        assert "## Visual reading" not in sidecar
+        assert any("Ollama" in w for w in result["warnings"])
+
+    def test_unconfigured_vision_model_warns_by_name(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        self._make_spec(mock_cfg.specs_path)
+        assert mock_cfg.ollama_vision_model == ""
+        caption = MagicMock()
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub), \
+             patch("meridian.enrich.caption_image", caption):
+            result = ingest_screenshot(
+                mock_cfg, "feat-006", self._png(tmp_path), note="tile shows 0", vision=True
+            )
+
+        caption.assert_not_called()
+        assert result["chunks"] >= 1
+        assert any("ollama_vision_model" in w for w in result["warnings"])
+
+    def test_reingest_from_edited_sidecar_replaces_chunks(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._make_spec(mock_cfg.specs_path)
+        png = self._png(tmp_path)
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            ingest_screenshot(mock_cfg, "feat-006", png, note="original wording here")
+            first_count = _row_count(mock_cfg.lancedb_path)
+
+            sidecar = feat_dir / "sources" / "kpi.notes.md"
+            sidecar.write_text(sidecar.read_text().replace(
+                "original wording here", "revised wording instead"
+            ))
+            ingest_screenshot(mock_cfg, "feat-006", png, note_file=sidecar)
+
+        assert _row_count(mock_cfg.lancedb_path) == first_count
+        hits = search_similar(
+            mock_cfg.lancedb_path, [0.1, 0.2, 0.3, 0.4], feat_id_filter="feat-006", limit=50
+        )
+        texts = " ".join(h["text"] for h in hits)
+        assert "revised wording instead" in texts
+        assert "original wording here" not in texts
+
+
+class TestReindexAllWithScreenshots:
+    def _ingest_one(self, mock_cfg: MeridianConfig, tmp_path: Path) -> Path:
+        feat_dir = mock_cfg.specs_path / "FEAT-006_screenshots"
+        feat_dir.mkdir(parents=True)
+        (feat_dir / "spec.md").write_text(
+            "---\nid: feat-006\nname: Shots\nstatus: idea\nsources: []\n---\nBody.\n"
+        )
+        png = tmp_path / "kpi.png"
+        png.write_bytes(PNG_BYTES)
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            ingest_screenshot(mock_cfg, "feat-006", png, note="tile shows 0")
+        return feat_dir
+
+    def test_notes_sidecar_survives_rebuild_with_stable_count(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._ingest_one(mock_cfg, tmp_path)
+        (feat_dir / "sources" / "doc.txt").write_text(" ".join(f"w{i}" for i in range(300)))
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            before = reindex_all(mock_cfg)
+            after = reindex_all(mock_cfg)
+
+        assert before["chunks"] == after["chunks"]
+        assert after["sources"] == 2  # doc.txt + kpi.notes.md
+        hits = search_similar(
+            mock_cfg.lancedb_path, [0.1, 0.2, 0.3, 0.4], feat_id_filter="feat-006", limit=50
+        )
+        assert any(h["source_name"] == "kpi.notes.md" for h in hits)
+        assert any("sources/kpi.png" in h["text"] for h in hits)
+
+    def test_unrelated_markdown_not_indexed(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._ingest_one(mock_cfg, tmp_path)
+        (feat_dir / "sources" / "README.md").write_text(" ".join(f"r{i}" for i in range(300)))
+        summaries = feat_dir / "sources" / "summaries"
+        summaries.mkdir()
+        (summaries / "brief.md").write_text(" ".join(f"s{i}" for i in range(300)))
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub):
+            stats = reindex_all(mock_cfg)
+
+        assert stats["sources"] == 1  # only kpi.notes.md
+        hits = search_similar(
+            mock_cfg.lancedb_path, [0.1, 0.2, 0.3, 0.4], limit=100
+        )
+        assert all(h["source_name"] == "kpi.notes.md" for h in hits)
+
+    def test_reindex_never_regenerates_the_reading(
+        self, mock_cfg: MeridianConfig, tmp_path: Path
+    ) -> None:
+        feat_dir = self._ingest_one(mock_cfg, tmp_path)
+        sidecar = feat_dir / "sources" / "kpi.notes.md"
+        before_bytes = sidecar.read_bytes()
+        caption = MagicMock()
+
+        with patch("meridian.enrich.embed", side_effect=_embed_stub), \
+             patch("meridian.enrich.caption_image", caption):
+            reindex_all(mock_cfg)
+
+        caption.assert_not_called()
+        assert sidecar.read_bytes() == before_bytes
