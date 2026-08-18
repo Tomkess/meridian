@@ -170,6 +170,33 @@ def _cycle_capacity_summary(specs_dir: Path, cycle_id: str) -> tuple[str, bool]:
 # status
 # --------------------------------------------------------------------------- #
 
+def _print_inbox_nudge() -> None:
+    """Surface the global inbox count on the per-project dashboard (FEAT-008).
+
+    Deliberate leak of global state into a project view: an invisible inbox is
+    an unemptied one. Kept to a single dim line, and silent when empty so it
+    costs nothing in the common case. Never fails the dashboard.
+    """
+    try:
+        from meridian.inbox import list_captures
+
+        captures = list_captures()
+    except Exception:  # pragma: no cover - defensive
+        return
+
+    if not captures:
+        return
+
+    oldest = min(c.created for c in captures)
+    age_days = (datetime.now() - oldest).days
+    age = f", oldest {age_days}d old" if age_days >= 1 else ""
+    plural = "idea" if len(captures) == 1 else "ideas"
+    console.print(
+        f"  [yellow]📥[/yellow] [dim]{len(captures)} {plural} pending triage{age} — "
+        f"run [bold]meridian inbox[/bold][/dim]"
+    )
+
+
 @app.command()
 def status():
     """Show full feature dashboard with lifecycle states."""
@@ -184,6 +211,7 @@ def status():
 
     cfg = _config()
     specs = all_specs(cfg.specs_path)
+    _print_inbox_nudge()
 
     if not specs:
         console.print("[dim]No features found. Run [bold]meridian new[/bold] to capture an idea.[/dim]")
@@ -1071,6 +1099,7 @@ def init_project(
     # ── summary ────────────────────────────────────────────────────────────
     console.print()
     console.print("  [bold green]Meridian initialised. ✓[/bold green]")
+    _register_project(root)
     console.print()
     console.print("  [bold]Next steps:[/bold]")
     console.print("  1. Write your north star:         [cyan]/meridian:vision[/cyan]")
@@ -1081,6 +1110,263 @@ def init_project(
     console.print()
     console.print("  [dim]Run [bold]meridian guide[/bold] at any time to check setup status.[/dim]")
     console.print()
+
+
+# --------------------------------------------------------------------------- #
+# capture / inbox / projects  — global idea inbox (FEAT-008)
+# --------------------------------------------------------------------------- #
+
+def _register_project(root: Path) -> None:
+    """Record this repo in the global registry so triage can find it.
+
+    Best-effort: a registry write must never be the reason `init` fails.
+    """
+    from meridian.config import slugify_project
+    from meridian.registry import derive_purpose, register
+
+    try:
+        specs_path = root / "specs"
+        purpose = derive_purpose(specs_path, root.name)
+        entry = register(slugify_project(root.name), root, purpose)
+        console.print(
+            f"  [green]✓[/green] Registered as [bold]{entry.slug}[/bold] "
+            f"[dim](meridian inbox can now route ideas here)[/dim]"
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        console.print(f"  [yellow]⚠[/yellow]  Could not update the project registry: {e}")
+
+
+@app.command()
+def capture(
+    text: str = typer.Argument(..., help="The idea, in your own words"),
+    project: str | None = typer.Option(
+        None, "--project", "-p",
+        help="Optional: file it to a known project now instead of at triage",
+    ),
+):
+    """Capture an idea into the global inbox — works from anywhere on the machine.
+
+    Deliberately does not require a Meridian repo: deciding which project an
+    idea belongs to is triage's job, not capture's.
+    """
+    from meridian.inbox import write_capture
+
+    if not text.strip():
+        console.print("[red]Error:[/red] Nothing to capture.")
+        raise typer.Exit(1)
+
+    path = write_capture(text, project=project.strip().lower() if project else None)
+    console.print(f"[green]✓[/green] Captured → [dim]{path}[/dim]")
+    if project:
+        console.print(f"  Tagged for [blue]{project.strip().lower()}[/blue]")
+    console.print("  [dim]Run [bold]meridian inbox[/bold] to triage.[/dim]")
+
+
+inbox_app = typer.Typer(help="Triage captured ideas into projects.", no_args_is_help=False)
+app.add_typer(inbox_app, name="inbox", invoke_without_command=True)
+
+
+@inbox_app.callback(invoke_without_command=True)
+def inbox_main(ctx: typer.Context):
+    """List pending captures with suggested target projects."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    from meridian.inbox import list_captures
+    from meridian.registry import all_projects
+
+    captures = list_captures()
+    if not captures:
+        console.print("[dim]Inbox empty. Capture an idea with "
+                      "[bold]meridian capture \"…\"[/bold].[/dim]")
+        raise typer.Exit(0)
+
+    entries = all_projects()
+    if not entries:
+        console.print(
+            "  [yellow]⚠[/yellow]  No projects registered — run [bold]meridian init[/bold] "
+            "in each repo so captures can be routed.\n"
+        )
+
+    # Triage is machine-global: resolve the store and model without requiring a
+    # repo, so suggestions do not silently vanish when run from ~ or /tmp.
+    from meridian.home import search_context
+
+    lancedb_path, ollama_model = search_context()
+
+    console.print(f"\n[bold]Inbox[/bold] — {len(captures)} pending\n")
+    for capture_item in captures:
+        suggestions = []
+        if entries:
+            from meridian.routing import suggest
+            suggestions = suggest(capture_item, entries, lancedb_path, ollama_model)
+
+        flag = "" if capture_item.is_routable else "  [yellow](empty — cannot route)[/yellow]"
+        console.print(
+            f"[bold]{capture_item.capture_id}[/bold]  "
+            f"[dim]{capture_item.created:%Y-%m-%d %H:%M}[/dim]{flag}"
+        )
+        console.print(f"   {capture_item.first_line[:100]}")
+        if suggestions:
+            console.print(f"   {_format_suggestions(suggestions)}")
+        elif capture_item.is_routable:
+            console.print("   [dim]→ no suggestion — route manually[/dim]")
+        console.print()
+
+    console.print("[dim]Route with [bold]meridian inbox route <id> <project>[/bold], "
+                  "or set aside with [bold]meridian inbox drop <id>[/bold].[/dim]")
+
+
+def _format_suggestions(suggestions) -> str:
+    """Render candidates so a weak match reads as weak, not as a recommendation."""
+    parts = []
+    for s in suggestions:
+        if s.basis == "explicit":
+            parts.append(f"[green]{s.slug}[/green] [dim](explicit)[/dim]")
+        else:
+            confidence = "likely" if s.score >= 0.5 else "weak"
+            parts.append(f"{s.slug} [dim]({confidence} {s.score:.2f} · {s.basis})[/dim]")
+    return "→ " + "   ".join(parts)
+
+
+@inbox_app.command("route")
+def inbox_route(
+    capture_id: str = typer.Argument(..., help="Capture ID from `meridian inbox`"),
+    project: str = typer.Argument(..., help="Target project slug"),
+):
+    """File a capture into a project as a new idea spec."""
+    from meridian.home import processed_dir
+    from meridian.inbox import archive, find_capture
+    from meridian.registry import all_projects, find_project
+
+    capture_item = find_capture(capture_id)
+    if capture_item is None:
+        console.print(
+            f"[red]Error:[/red] No pending capture [bold]{capture_id}[/bold]. "
+            "It may already have been routed — see the .processed/ folder."
+        )
+        raise typer.Exit(1)
+
+    if not capture_item.is_routable:
+        console.print(f"[red]Error:[/red] Capture [bold]{capture_id}[/bold] has no text to route.")
+        raise typer.Exit(1)
+
+    slug = project.strip().lower()
+    entry = find_project(slug)
+    if entry is None:
+        known = ", ".join(e.slug for e in all_projects()) or "none registered"
+        console.print(f"[red]Error:[/red] Unknown project '{slug}'. Known: {known}")
+        raise typer.Exit(1)
+    if not entry.exists:
+        console.print(
+            f"[red]Error:[/red] Registered path for [bold]{slug}[/bold] does not exist: "
+            f"{entry.path}"
+        )
+        raise typer.Exit(1)
+
+    if _git_is_dirty(entry.path):
+        console.print(
+            f"  [yellow]⚠[/yellow]  {slug} has uncommitted changes — the new spec will "
+            "land on top of them."
+        )
+
+    spec_path = _create_spec_in(entry.path, capture_item)
+    archived = archive(capture_item, processed_dir())
+
+    feat_id = spec_path.parent.name.split("_")[0]
+    console.print(f"[green]✓[/green] Routed to [bold]{slug}[/bold] → {feat_id}")
+    console.print(f"  [dim]{spec_path}[/dim]")
+    console.print(f"  [dim]Capture archived → {archived}[/dim]")
+
+
+def _git_is_dirty(path: Path) -> bool:
+    """Advisory only — a missing or non-git path is simply 'not dirty'."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=path, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _create_spec_in(project_root: Path, capture_item) -> Path:
+    """Create an idea spec in another repo from a capture.
+
+    The first line becomes the feature name; the full capture text is written
+    into the body so nothing is lost to summarisation (AC15).
+    """
+    specs_path = project_root / "specs"
+    specs_path.mkdir(parents=True, exist_ok=True)
+
+    spec_path = create_spec(
+        specs_path,
+        capture_item.first_line,
+        capture_item.goal,
+        capture_item.appetite,
+    )
+
+    body = spec_path.read_text()
+    spec_path.write_text(
+        f"{body.rstrip()}\n\n"
+        f"## Captured\n\n"
+        f"*Captured {capture_item.created:%Y-%m-%d %H:%M} via `meridian capture`.*\n\n"
+        f"{capture_item.text}\n"
+    )
+    rebuild_registry(specs_path)
+    return spec_path
+
+
+@inbox_app.command("drop")
+def inbox_drop(
+    capture_id: str = typer.Argument(..., help="Capture ID from `meridian inbox`"),
+):
+    """Set a capture aside. Moved to the icebox, never deleted."""
+    from meridian.home import icebox_dir
+    from meridian.inbox import archive, find_capture
+
+    capture_item = find_capture(capture_id)
+    if capture_item is None:
+        console.print(f"[red]Error:[/red] No pending capture [bold]{capture_id}[/bold].")
+        raise typer.Exit(1)
+
+    archived = archive(capture_item, icebox_dir())
+    console.print(f"[green]✓[/green] Dropped [bold]{capture_id}[/bold] → [dim]{archived}[/dim]")
+
+
+@app.command()
+def projects():
+    """List projects registered for idea routing."""
+    from meridian.registry import all_projects
+
+    entries = all_projects()
+    if not entries:
+        console.print(
+            "[dim]No projects registered. Run [bold]meridian init[/bold] in each repo.[/dim]"
+        )
+        raise typer.Exit(0)
+
+    table = Table(box=box.SIMPLE, show_header=True, header_style="bold")
+    table.add_column("Project")
+    table.add_column("Purpose")
+    table.add_column("Path", overflow="fold")
+    table.add_column("")
+
+    for e in entries:
+        mark = "[green]✓[/green]" if e.exists else "[red]missing[/red]"
+        table.add_row(e.slug, e.purpose or "[dim]—[/dim]", str(e.path), mark)
+
+    console.print()
+    console.print(table)
+    stale = [e for e in entries if not e.exists]
+    if stale:
+        console.print(
+            f"  [yellow]⚠[/yellow]  {len(stale)} registered path(s) not found — "
+            "moved, renamed, or on an unmounted disk. Entries are kept, not deleted."
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1327,6 +1613,16 @@ def help_cmd():
          'Read notes (and any agent visual reading) from a sidecar file'),
         ('meridian enrich feat-007 shot.png --note "…" --vision',
          'Fallback: also describe the image with the configured Ollama vision model'),
+        ('meridian capture "idea text"',
+         'Capture an idea into the global inbox — works outside any repo'),
+        ('meridian inbox',
+         'Triage pending captures, with suggested target projects'),
+        ('meridian inbox route <id> <project>',
+         'File a capture into a project as a new idea spec'),
+        ('meridian inbox drop <id>',
+         'Set a capture aside — moved to the icebox, never deleted'),
+        ('meridian projects',
+         'List projects registered for idea routing'),
         ('meridian search "drift detection"',
          'Semantic search across this project\'s research (+ --feat, --limit, --no-rerank)'),
         ('meridian search "drift detection" --all-projects',

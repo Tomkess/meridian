@@ -16,7 +16,7 @@ name: Capture ideas away from the PC into a global inbox and triage them into th
   right project
 scheduler: null
 sources: []
-status: draft
+status: done
 tags: []
 updated: '2026-08-18'
 ---
@@ -96,13 +96,20 @@ a directory of markdown files means anything that can write a file already works
   shared LanceDB index across all projects (`project=None`), aggregating hit
   scores per project. Top 3 candidates are shown, never just the winner.
 - **AC12** — When the index has no rows for a project, that project can still be
-  suggested from its registry `purpose` line, embedded at registry-write time.
-  A brand-new project with no research must not be permanently unroutable.
+  suggested from its registry `purpose` line. A brand-new project with no research
+  must not be permanently unroutable. *Built differently:* the purpose is embedded
+  at triage time, not at registry-write time as written here. Embedding on write
+  would make `meridian init` depend on Ollama being up, which would be a bad trade
+  for a setup command.
 - **AC13** — An explicit `project` (frontmatter or `#hashtag`) bypasses semantic
   routing entirely and is shown as `explicit`, not as a score.
-- **AC14** — `meridian inbox route <id> --project <slug>` runs the equivalent of
+- **AC14** — `meridian inbox route <id> <slug>` runs the equivalent of
   `meridian new` in that project's repo and moves the capture file to
   `~/.meridian/inbox/.processed/`. The file is moved, never deleted.
+  *Built differently:* the target is a positional argument, not `--project`.
+  `test_contracts.py` checks documented flags against `meridian <subcmd> --help`,
+  and a flag on a Typer sub-command is not visible there — so `--project` would
+  have been undocumentable. Positional is also shorter to type.
 - **AC15** — Routing writes the capture's full text into the new spec's body, so
   nothing is lost to summarisation.
 - **AC16** — `meridian inbox drop <id>` moves a capture to
@@ -122,11 +129,14 @@ a directory of markdown files means anything that can write a file already works
 
 ## Scope
 
+- `meridian/home.py` — machine-global paths and `search_context()`. *Built as a new
+  module rather than in `config.py` as first scoped:* `config.py` exists to load a
+  repo's `.meridian.toml`, and capture must never import that path.
 - `meridian/inbox.py` — capture file read/write, frontmatter and hashtag parsing.
 - `meridian/registry.py` — `~/.meridian/projects.toml` read/write/validate.
-- `meridian/cli.py` — `capture`, `inbox`, `projects` commands.
-- `meridian/config.py` — locate the global Meridian home independently of any repo.
-- Tests, `CLAUDE.md`, `meridian help`.
+- `meridian/routing.py` — suggestion engine.
+- `meridian/cli.py` — `capture`, `inbox`, `projects` commands, plus the `status` nudge.
+- Tests, `CLAUDE.md`, `meridian help`, `specs/STEERING.md`.
 
 ## Out of Scope
 
@@ -163,6 +173,42 @@ a directory of markdown files means anything that can write a file already works
 ## Related Research
 
 None ingested. Design rationale is captured in this spec's Summary.
+
+## Verification
+
+Manual end-to-end run on 2026-08-18, against the real machine-global home and the
+live shared index:
+
+- `meridian capture` from `/tmp` — a directory with no `.meridian.toml` anywhere up
+  the tree — succeeded (AC5). This is the path no other CLI test covers, since every
+  existing fixture runs inside a repo.
+- Five projects registered; `meridian inbox` from `/tmp` ranked a capture reading
+  *"annotate a screenshot and pull it into a feature's research corpus"* as:
+  `misc (0.56 · index)`, `gdc-mic-ai-evaluation (0.52 · index)`,
+  `portfolio-management (0.46 · purpose)`.
+  `misc` is the correct top hit — FEAT-006's screenshot chunks are attributed there,
+  not to `meridian`. Note the scores cluster tightly; ranking discriminates weakly on
+  a 178-chunk store, which is why the display says "likely"/"weak" rather than
+  presenting a winner.
+- `meridian inbox drop` moved the capture to `.icebox/`, inbox returned to empty.
+
+Two defects were found by running it rather than by testing it, both now fixed and
+covered:
+
+1. **Triage produced no suggestions outside a repo.** `suggest()` took a
+   `MeridianConfig`, so `load_config()` failing outside a repo silently disabled
+   ranking — in exactly the place the inbox is most likely to be read. It now takes
+   the store path and model directly, resolved by `home.search_context()`
+   (current repo → a registered project's config → documented defaults).
+2. **The test suite polluted the real global registry.** `meridian init` registers
+   its repo, and the subprocess CLI tests run the real binary, so every test run
+   appended pytest temp directories to `~/.meridian/projects.toml` — ten of them
+   before it was caught. Fixed by a session-scoped autouse fixture in
+   `tests/conftest.py` that sets `MERIDIAN_HOME` for the whole run, including
+   subprocesses, plus `tests/test_home_isolation.py` as a standing guard. The real
+   registry was cleaned by hand.
+
+Suite: 577 passed, ruff and mypy clean.
 
 ## Open Questions
 
