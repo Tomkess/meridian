@@ -10,8 +10,11 @@
 # create` is a REST call, not a workflow. That matters here because this repo is
 # private and its Actions quota is unavailable.
 #
-# The version lives in exactly one place — meridian/__init__.py — and
-# pyproject.toml reads it via [tool.setuptools.dynamic].
+# The version lives in exactly one place — `version` in pyproject.toml, bumped by
+# `uv version`. meridian/__init__.py reads it back from installed metadata.
+#
+# Every check runs through `uv run --locked`, so the gate uses the pinned
+# dependency set rather than whatever interpreter happens to be on PATH.
 
 set -euo pipefail
 
@@ -28,26 +31,23 @@ run() { if [[ -n "$DRY_RUN" ]]; then printf '   would run: %s\n' "$*"; else "$@"
 
 [[ -n "$BUMP" ]] || die "usage: scripts/release.sh patch|minor|major|X.Y.Z [--dry-run]"
 
-CURRENT="$(python3 -c 'import re,pathlib; print(re.search(r"\"(.+?)\"", pathlib.Path("meridian/__init__.py").read_text()).group(1))')"
+command -v uv >/dev/null || die "uv is required — https://docs.astral.sh/uv/"
 
-NEXT="$(python3 - "$CURRENT" "$BUMP" <<'PY'
-import sys
-current, bump = sys.argv[1], sys.argv[2]
-major, minor, patch = (int(p) for p in current.split("."))
-if bump == "major":
-    major, minor, patch = major + 1, 0, 0
-elif bump == "minor":
-    minor, patch = minor + 1, 0
-elif bump == "patch":
-    patch += 1
-else:
-    parts = bump.split(".")
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
-        sys.exit(f"not a bump keyword or X.Y.Z version: {bump}")
-    major, minor, patch = (int(p) for p in parts)
-print(f"{major}.{minor}.{patch}")
-PY
-)"
+CURRENT="$(uv version --short)"
+
+# Let uv compute the next version so there is no second implementation of
+# semver to keep correct. --dry-run prints "name old => new".
+case "$BUMP" in
+  major|minor|patch)
+    NEXT="$(uv version --bump "$BUMP" --dry-run --short 2>/dev/null | tail -1)"
+    ;;
+  *)
+    [[ "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+      || die "not a bump keyword or X.Y.Z version: $BUMP"
+    NEXT="$BUMP"
+    ;;
+esac
+[[ -n "$NEXT" ]] || die "could not determine the next version"
 
 TAG="v${NEXT}"
 step "Releasing ${CURRENT} → ${NEXT}"
@@ -69,26 +69,21 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
   die "tag $TAG already exists"
 fi
 
+# A stale lock means the gate below would not be testing what ships.
+uv lock --check >/dev/null 2>&1 || die "uv.lock is out of date — run 'uv lock' and commit it"
+
 # ── quality gate ───────────────────────────────────────────────────────────── #
 # CI cannot run on this repo (private, Actions billing), so this is the only gate.
 
-step "Tests, lint, types"
-python3 -m pytest tests/ -q
-python3 -m ruff check meridian tests
-python3 -m mypy meridian
+step "Tests, lint, types (locked environment)"
+uv run --locked python -m pytest tests/ -q
+uv run --locked ruff check meridian tests
+uv run --locked mypy meridian
 
 # ── bump ───────────────────────────────────────────────────────────────────── #
 
-step "Bumping meridian/__init__.py"
-if [[ -z "$DRY_RUN" ]]; then
-  python3 - "$NEXT" <<'PY'
-import pathlib, re, sys
-path = pathlib.Path("meridian/__init__.py")
-path.write_text(re.sub(r'__version__ = "[^"]+"', f'__version__ = "{sys.argv[1]}"', path.read_text()))
-PY
-else
-  printf '   would set __version__ = "%s"\n' "$NEXT"
-fi
+step "Bumping version"
+run uv version "$NEXT"
 
 step "Updating CHANGELOG.md"
 if [[ -z "$DRY_RUN" ]]; then
@@ -122,7 +117,7 @@ fi
 # ── commit, tag, push, release ─────────────────────────────────────────────── #
 
 step "Commit and tag"
-run git add meridian/__init__.py CHANGELOG.md
+run git add pyproject.toml uv.lock CHANGELOG.md
 run git commit -m "chore: release ${TAG}"
 run git tag -a "$TAG" -m "Meridian ${TAG}"
 run git push origin main

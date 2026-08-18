@@ -25,15 +25,15 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies
-        run: uv pip install -e ".[dev]" --system
+        run: uv sync --locked
 
       # ── Layer 1: static analysis ────────────────────────────────────────── #
 
       - name: Lint (ruff)
-        run: ruff check .
+        run: uv run --locked ruff check .
 
       - name: Type-check (mypy)
-        run: mypy meridian/
+        run: uv run --locked mypy meridian/
 
       # ── Skill-consistency: bundled ↔ .claude/commands/meridian drift ────── #
       # Exercises the FEAT-003 `--compare` CLI directly (model-free). The
@@ -45,7 +45,7 @@ jobs:
           rc=0
           for f in meridian/skills/commands/*.md; do
             b="$(basename "$f")"
-            python scripts/skill_consistency.py --compare "$f" ".claude/commands/meridian/$b" \
+            uv run --locked python scripts/skill_consistency.py --compare "$f" ".claude/commands/meridian/$b" \
               || { echo "::error file=.claude/commands/meridian/$b::structural drift vs bundled skill"; rc=1; }
           done
           exit $rc
@@ -53,7 +53,7 @@ jobs:
       # ── Layer 2: behavioral tests (includes contract check) ─────────────── #
 
       - name: Test
-        run: pytest tests/ -q --tb=short
+        run: uv run --locked python -m pytest tests/ -q --tb=short
         # Ollama and Databricks are absent in CI — tests that depend on them
         # are mocked or assert graceful failure (no traceback), so all 239
         # tests pass without external services.

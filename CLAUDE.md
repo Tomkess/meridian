@@ -71,12 +71,29 @@ meridian install --all --pr              # propagate the new skills to tracked r
 Or run `/release` in Claude Code, which drives the same script and handles the
 changelog wording.
 
-The version lives in **one** place — `meridian/__init__.py`. `pyproject.toml` reads it
-via `[tool.setuptools.dynamic]`, so there is nothing to keep in sync.
+The version lives in **one** place — `version` in `pyproject.toml`, bumped by
+`uv version`. `meridian/__init__.py` reads it back from installed metadata, so there is
+nothing to keep in sync and nothing hand-rolled to bump.
+
+Every check runs through `uv run --locked`, so the gate uses the pinned dependency set
+rather than whatever interpreter is first on `PATH`. Preflight also refuses on a stale
+`uv.lock`, since that would mean testing something other than what ships.
 
 No GitHub Actions minutes are consumed: `gh release create` is a REST call. This repo
-is private and its Actions quota is unavailable, so the script's local pytest + ruff +
-mypy gate is the only verification that runs. Don't skip it.
+is private and its Actions quota is unavailable, so that local gate is the only
+verification that runs. Don't skip it.
+
+## Development
+
+```bash
+uv sync                       # create .venv from uv.lock (dev group included)
+uv run python -m pytest -q    # or: uv run ruff check . / uv run mypy meridian/
+uv lock                       # after changing dependencies — commit the lock
+```
+
+Dev tooling lives in `[dependency-groups] dev` (PEP 735), not in
+`optional-dependencies`, so it is installed by `uv sync` and excluded from the built
+package. `rerank` stays a real extra — it is a user-facing install option.
 
 Installed from git, not PyPI — the name is taken there by an unrelated project.
 

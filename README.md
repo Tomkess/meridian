@@ -280,7 +280,7 @@ meridian transition --from-merge feat-001/rebalancing-engine
 ```bash
 git clone https://github.com/your-org/meridian
 cd meridian
-uv pip install -e ".[dev]"
+uv sync        # creates .venv from uv.lock, dev tools included
 
 # Run tests
 pytest tests/

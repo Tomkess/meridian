@@ -33,7 +33,7 @@ def _find_binary() -> str:
     if found:
         return found
     raise RuntimeError(
-        "meridian binary not found. Run: uv pip install -e '.[dev]'"
+        "meridian binary not found. Run: uv sync"
     )
 
 
