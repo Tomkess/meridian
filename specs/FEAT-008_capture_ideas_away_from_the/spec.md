@@ -1,6 +1,10 @@
 ---
-abandoned_at: null
-abandoned_reason: null
+abandoned_at: '2026-08-18'
+abandoned_reason: 'Idea inbox was over-built for the actual problem. Capture-from-phone
+  solved a need that turned out to be secondary; what was really missing was seeing
+  across projects at once. The genuinely useful parts — the project registry and home.py
+  — were kept and moved to FEAT-009 (meridian register + status --all). Removed: inbox.py,
+  routing.py, capture/inbox CLI, and the status nudge.'
 appetite: m
 blocked_at: null
 blocked_by: null
@@ -16,7 +20,7 @@ name: Capture ideas away from the PC into a global inbox and triage them into th
   right project
 scheduler: null
 sources: []
-status: in-production
+status: abandoned
 tags: []
 updated: '2026-08-18'
 ---
