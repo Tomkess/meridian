@@ -94,13 +94,19 @@
        hit with `sources/…png` in the chunk text; `reindex_all` chunk parity and byte-unchanged
        sidecar confirmed in an isolated store.
        Pre: task 33 complete
-- [ ] 36. Outstanding manual checks: (a) invoke `/meridian:enrich` as a real slash command with an
-       attached screenshot, end to end; (b) `ollama pull` a multimodal model, set
-       `ollama_vision_model`, and exercise `--vision` with Ollama up and stopped; (c) `--from-clipboard`
-       against a real clipboard image. All three are covered by automated tests with patched seams,
-       but none has been run against the live external tool.
+- [x] 36. Live external-tool verification (the gap 56 mocked tests structurally cannot close):
+       `--vision` against real Ollama with `gemma4:e4b` — payload key `images` and response field
+       `.response` both confirmed correct, caption written with `ollama:gemma4:e4b` attribution;
+       `--from-clipboard` against a real clipboard image — `«class PNGf»` AppleScript writes a valid
+       1610x876 PNG; `/meridian:enrich` invoked as a real slash command end to end.
        Pre: task 35 complete
-- [ ] 37. Do NOT run `meridian index` in this repo until FEAT-007 lands: `lancedb_path` is the global
-       `~/.meridian/lancedb`, and `reindex_all` still drops the whole table, so a rebuild here wipes
-       every other project's vectors. Verify reindex behaviour in an isolated store instead.
-       Pre: none
+- [x] 37. Fix defect found by the live clipboard run: the CLI printed `clipboard-…T164940.png` while
+       `slug_image_name()` stored `clipboard-…t164940.png`, so the name shown did not match the file
+       on disk. Timestamp format changed to `%Y-%m-%d-%H%M%S`; regression test added
+       (`TestClipboardFilenameMatchesPrintedName`).
+       Pre: task 36 complete
+- [x] 38. Fix skill-prose defect found by the live `/meridian:enrich` run: "do not diagnose root
+       causes" was blunt enough to suppress a *visible* fact (both axes labelled `Avg`, so a ratio is
+       averaged per entity rather than aggregated). Reworded to draw the line at what is shown and
+       what it means versus why the pipeline produced it; both skill copies re-synced.
+       Pre: task 36 complete

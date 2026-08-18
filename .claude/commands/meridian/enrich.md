@@ -31,8 +31,14 @@ read axis labels, values, and anomalies that a local vision model would miss.
    - the chart/page type and its title
    - axis labels and their ranges, or the fields and values visible
    - what specifically looks wrong: empty tiles, absurd ranges, missing series, error text
-   Report only what is visible. Do not diagnose root causes — that is the reader's job later, and a
-   guess embedded as fact pollutes the corpus.
+   - what the labels themselves tell you about the metric definition — e.g. an `Avg` prefix means a
+     ratio is being averaged across entities rather than aggregated, and a "yield" running to four
+     digits is not a percentage. These are readings of what is on screen, so they belong here.
+
+   The line to hold: describe *what is shown and what it means*, not *why the pipeline produced it*.
+   "Both axes are labelled Avg, so a ratio is being averaged per entity" is an observation — keep it.
+   "The join must be fanning out" is a guess about code you cannot see — leave it out, because a
+   guess embedded as fact pollutes the corpus for every later `/ask`.
 
 4. Write a sidecar file to a scratch path (NOT into `sources/` — the CLI owns that directory).
    Use exactly this format:

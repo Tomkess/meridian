@@ -170,3 +170,22 @@ class TestRunHelper:
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("defaults", 5)):
             with pytest.raises(RuntimeError, match="did not respond"):
                 capture._run(["defaults", "read", "x"])
+
+
+# ── clipboard filename ↔ printed name agreement (FEAT-006) ───────────────── #
+
+
+class TestClipboardFilenameMatchesPrintedName:
+    """A live run exposed this: the CLI printed clipboard-…T164940.png while
+    slug_image_name() stored clipboard-…t164940.png. A name the user cannot find
+    is worse than no name, so the stamp must survive slugging unchanged.
+    """
+
+    def test_generated_stamp_is_slug_stable(self):
+        from datetime import datetime
+
+        from meridian.enrich import slug_image_name
+
+        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        name = f"clipboard-{stamp}.png"
+        assert slug_image_name(name) == name

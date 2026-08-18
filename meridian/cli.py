@@ -541,7 +541,9 @@ def _resolve_capture(latest_screenshot_flag: bool, from_clipboard: bool) -> str:
             )
         return str(path)
 
-    stamp = datetime.now().strftime("%Y-%m-%dT%H%M%S")
+    # Lowercase, dash-separated: slug_image_name() would otherwise rewrite an
+    # ISO "T" to "t", so the name printed here would not match the file on disk.
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     dest = Path(tempfile.gettempdir()) / f"clipboard-{stamp}.png"
     path = clipboard_image(dest)
     console.print(f"[dim]Using clipboard image →[/dim] [bold]{path.name}[/bold]")
