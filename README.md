@@ -30,10 +30,10 @@ Designed to be **installed into other projects**, not used standalone.
 │  meridian new "idea"             │  /goal new    validated goal         │
 │  meridian enrich <f> <src>       │  /idea        capture → stub spec    │
 │  meridian status                 │  /spec        elaborate spec         │
-│  meridian close <f> -s <s>       │  /connect-dots  cross-feature map    │
+│  meridian close <f> -s <s>       │  /ask           question the corpus  │
 │  meridian index                  │  /breakdown   technical decomp       │
 │  meridian transition             │  /tasks       atomic task list       │
-│  meridian guide                  │  /roadmap     goals × features       │
+│  meridian guide                  │  /research    deep synthesis         │
 │                                  │                                      │
 │  RESEARCH PIPELINE               │  Rule: CLI owns ops.                 │
 │  source → extract → chunk        │        Skills own reasoning.         │
@@ -110,7 +110,6 @@ flowchart TD
     I -->|meridian new| F["📄 FEAT-NNN/spec.md\nstatus: idea"]
     F -->|meridian enrich| R["🔬 sources/ + LanceDB\nresearch embedded"]
     F -->|/spec| S["📋 Structured spec\nACs, risks, deps"]
-    S -->|/connect-dots| CD["🔗 Cross-feature\nawareness"]
     S -->|/breakdown| B["⚙️ breakdown.md\ncomponents + effort"]
     B -->|/tasks| T["✅ tasks.md\nPre: preconditions"]
     T --> CODE["💻 Implementation"]
@@ -168,11 +167,9 @@ stateDiagram-v2
 | `meridian enrich feat-007 shot.png --note "…" --vision` | Fallback: add a local Ollama vision caption |
 | `meridian search "query"` | Semantic search across all enriched research |
 | `meridian index` | Rebuild REGISTRY.md + full vector index |
-| `meridian link-job feat-007 <job>` | Link a Databricks job to a feature |
-| `meridian unlink-job feat-007` | Remove Databricks job link |
 | `meridian transition --from-merge feat-007/slug` | Auto-transition to in-production after merge |
 | `meridian guide` | 8-step project advisor |
-| `meridian help` | Full manual |
+| `meridian help` | List every command (generated from the CLI) |
 
 **Valid `--status` values:** `idea` `draft` `in-progress` `blocked` `done` `in-production` `abandoned`
 
@@ -188,10 +185,6 @@ stateDiagram-v2
 | `/spec <feat-id>` | spec, goal, sources, STEERING.md | `spec.md` body; status→draft |
 | `/breakdown <feat-id>` | spec, goal, deps, STEERING.md | `breakdown.md` |
 | `/tasks <feat-id>` | spec, breakdown, STEERING.md | `tasks.md`; status→in-progress |
-| `/plan <feat-id>` | spec, breakdown | `plan.md` (optional, for `l` appetite) |
-| `/connect-dots [feat-id]` | all specs | — (report only) |
-| `/roadmap` | VISION, goals, all specs | — (report only) |
-| `/challenge <subject>` | VISION, goals, spec | — (stress-test report) |
 | `/decision <title>` | `decisions/` | `decisions/NNN-slug.md` |
 | `/enrich <feat> "<note>"` | attached screenshot | `sources/<slug>.png` + `.notes.md` |
 | `/ask [question]` | enriched research chunks | — (RAG answer) |
@@ -209,9 +202,6 @@ lancedb_path   = "~/.meridian/lancedb"   # global by default — shared across b
 ollama_model   = "mxbai-embed-large"
 reranker_model = "BAAI/bge-reranker-v2-m3"
 
-[databricks]
-host      = "https://your-workspace.azuredatabricks.net"
-token_env = "DATABRICKS_TOKEN"            # env var holding the PAT
 
 # Optional: override Databricks status fetch timeout (default 8s)
 # status_timeout = 8
@@ -241,13 +231,10 @@ meridian enrich feat-001 https://example.com/drift-detection
 # 6. Elaborate the spec
 /spec feat-001
 
-# 7. Check cross-feature relationships
-/connect-dots
-
-# 8. Break it down technically
+# 7. Break it down technically
 /breakdown feat-001
 
-# 9. Generate atomic tasks
+# 8. Generate atomic tasks
 /tasks feat-001
 
 # 10. Track progress

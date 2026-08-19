@@ -206,7 +206,6 @@ def create_spec(
         "abandoned_reason": None,       # why it was killed (preserved through revive cycles)
         "abandoned_at": None,           # ISO date when abandoned
         "sources": [],
-        "scheduler": None,
     }
     post = frontmatter.Post(SPEC_TEMPLATE, **metadata)
     spec_path = feat_dir / "spec.md"

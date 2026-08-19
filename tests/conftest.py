@@ -48,10 +48,6 @@ def project_dir(tmp_path: Path, specs_dir: Path) -> Path:
         "[meridian]\n"
         f'specs_path = "specs"\n'
         f'lancedb_path = "{tmp_path / ".meridian" / "lancedb"}"\n'
-        "\n"
-        "[databricks]\n"
-        'host = ""\n'
-        'token_env = "DATABRICKS_TOKEN"\n'
     )
     (tmp_path / ".meridian.toml").write_text(toml)
     return tmp_path
@@ -65,9 +61,6 @@ def mock_cfg(tmp_path: Path, specs_dir: Path) -> MeridianConfig:
         lancedb_path=tmp_path / ".meridian" / "lancedb",
         ollama_model="mxbai-embed-large",
         reranker_model="BAAI/bge-reranker-v2-m3",
-        databricks_host="",
-        databricks_token_env="DATABRICKS_TOKEN",
-        databricks_status_timeout=8,
         root=tmp_path,
         project="test-project",
     )
@@ -85,9 +78,6 @@ def other_cfg(tmp_path: Path, specs_dir: Path) -> MeridianConfig:
         lancedb_path=tmp_path / ".meridian" / "lancedb",
         ollama_model="mxbai-embed-large",
         reranker_model="BAAI/bge-reranker-v2-m3",
-        databricks_host="",
-        databricks_token_env="DATABRICKS_TOKEN",
-        databricks_status_timeout=8,
         root=tmp_path,
         project="other-project",
     )

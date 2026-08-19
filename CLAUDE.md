@@ -37,7 +37,7 @@ meridian index                               # rebuild vector index + REGISTRY.m
 meridian index --vectors-only                # vectors only — leaves REGISTRY.md untouched
 meridian transition --from-merge <branch>    # auto-transition after git merge (branch: feat-NNN/slug)
 meridian guide                               # project setup advisor
-meridian help                                # full manual
+meridian help                                # list every command
 ```
 
 ## Slash commands
@@ -48,12 +48,8 @@ meridian help                                # full manual
 | `/goal new` | Create validated goal |
 | `/idea` | Capture + map idea to goal (asks appetite) |
 | `/spec` | Elaborate into structured spec + ACs |
-| `/connect-dots` | Cross-feature awareness |
 | `/breakdown` | Technical decomposition → breakdown.md |
 | `/tasks` | Atomic task list → tasks.md (triggers in-progress); tasks include `Pre:` preconditions |
-| `/plan` | Phased strategy → plan.md (optional) |
-| `/roadmap` | Goals × features × gaps |
-| `/challenge` | Stress-test against vision |
 | `/decision` | Write ADR |
 | `/enrich <feat> "<note>"` | Ingest an attached screenshot + notes + agent visual reading |
 | `/ask [question]` | RAG Q&A — answer a question from enriched research |
@@ -102,7 +98,6 @@ Installed from git, not PyPI — the name is taken there by an unrelated project
 - Embeddings: Ollama `mxbai-embed-large`
 - Vector store: LanceDB at `~/.meridian/lancedb/`
 - Reranker: `BAAI/bge-reranker-v2-m3`
-- Scheduler: Databricks Jobs API
 
 ## Config
 
@@ -116,9 +111,6 @@ lancedb_path   = "~/.meridian/lancedb"
 ollama_model   = "mxbai-embed-large"
 reranker_model = "BAAI/bge-reranker-v2-m3"
 
-[databricks]
-host      = "https://your-workspace.azuredatabricks.net"
-token_env = "DATABRICKS_TOKEN"
 ```
 
 `lancedb_path` defaults to `~/.meridian/lancedb`, which **every** Meridian install
@@ -166,7 +158,6 @@ specs/
     spec.md          ← requirements + acceptance criteria
     breakdown.md     ← technical design
     tasks.md         ← atomic work units (AI-executable); each task has Pre: preconditions
-    plan.md          ← phased strategy (optional)
     sources/
     summaries/
 ```
