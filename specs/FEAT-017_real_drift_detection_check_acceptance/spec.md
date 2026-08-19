@@ -13,7 +13,7 @@ goal: '~'
 id: feat-017
 name: 'Real drift detection: check acceptance criteria against what the branch actually
   changed'
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-19'
 ---
