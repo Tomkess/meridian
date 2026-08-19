@@ -29,6 +29,7 @@ Index of all features across all goals and lifecycle states.
 | FEAT-013 | Close the four verified data-loss defects: atomic locked spec writes, unloseable registry, atomic index, contract-tested skills | ~ | in-production | s | high | — | 2026-08-19 |
 | FEAT-014 | Cut surface: remove Databricks, four low-value skills, and the hand-written manual | ~ | in-production | s | high | — | 2026-08-19 |
 | FEAT-015 | Agent ergonomics: --json output, one-line errors, idempotent lifecycle commands | ~ | in-production | s | high | — | 2026-08-19 |
+| FEAT-016 | meridian install --prune: remove skills that no longer ship with Meridian | ~ | in-production | xs | high | — | 2026-08-19 |
 | FEAT-008 | Capture ideas away from the PC into a global inbox and triage them into the right project | ~ | abandoned | m | medium | — | 2026-08-18 |
 
 ## Goals
