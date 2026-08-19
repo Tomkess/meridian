@@ -3,7 +3,6 @@ import os
 import re
 import sys
 import tempfile
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,7 +29,7 @@ from meridian.specs import (
     transition_spec,
 )
 
-# P6: set MERIDIAN_DEBUG=1 to see library-level warnings (Databricks errors, rerank failures, etc.)
+# P6: set MERIDIAN_DEBUG=1 to see library-level warnings (rerank failures, registry writes, etc.)
 if os.environ.get("MERIDIAN_DEBUG"):
     logging.basicConfig(
         level=logging.DEBUG,
@@ -67,36 +66,6 @@ def _main(
     """Navigate your codebase with purpose."""
 
 console = Console()
-
-# ── Help diagram helpers ───────────────────────────────────────────────────── #
-
-_HELP_W = 62  # inner box width between │ and │
-
-
-def _vlen(s: str) -> int:
-    """Display width after stripping Rich markup — accounts for wide chars."""
-    plain = re.sub(r"\[/?[a-zA-Z0-9 _#:.!]+\]", "", s).replace("\\[", "[")
-    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in plain)
-
-
-def _box_top(label: str, color: str = "bold") -> str:
-    inner = f"─ [{color}]{label}[/{color}] "
-    return f"  [dim]┌[/dim]{inner}[dim]{'─' * (_HELP_W - _vlen(inner))}┐[/dim]"
-
-
-def _box_row(content: str) -> str:
-    pad = max(0, _HELP_W - 2 - _vlen(content))
-    return f"  [dim]│[/dim]  {content}{' ' * pad}[dim]│[/dim]"
-
-
-def _box_bot() -> str:
-    return f"  [dim]└{'─' * _HELP_W}┘[/dim]"
-
-
-def _connector(label: str = "") -> str:
-    prefix = "  [dim]             │[/dim]"
-    return f"{prefix}  {label}" if label else prefix
-
 
 # ── Spec lookup helper ────────────────────────────────────────────────────── #
 
@@ -288,15 +257,6 @@ def status(
     ),
 ):
     """Show full feature dashboard with lifecycle states."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    from meridian.databricks import (
-        latest_run_state,
-        latest_task_states,
-        run_state_display,
-        task_run_display,
-    )
-
     if all_projects:
         _status_all()
         raise typer.Exit(0)
@@ -307,46 +267,6 @@ def status(
     if not specs:
         console.print("[dim]No features found. Run [bold]meridian new[/bold] to capture an idea.[/dim]")
         raise typer.Exit(0)
-
-    # ── Pre-fetch Databricks job/task states ───────────────────────────────
-    # Only when at least one spec has a scheduler.job_id set.
-    # Each entry: (feat_id_upper, job_id, task_keys_or_None)
-    job_linked: list[tuple[str, int, list[str] | None]] = []
-    for s in specs:
-        sched = s.get("scheduler")
-        if isinstance(sched, dict) and sched.get("job_id"):
-            task_keys = sched.get("task_keys") or None
-            if isinstance(task_keys, list) and not task_keys:
-                task_keys = None
-            job_linked.append((
-                str(s.get("id", "?")).upper(),
-                int(sched["job_id"]),
-                task_keys,
-            ))
-
-    has_jobs = bool(job_linked)
-    job_states: dict[str, str] = {}  # feat_id_upper → display string
-
-    if has_jobs:
-        def _fetch(feat_id: str, job_id: int, task_keys: list[str] | None) -> tuple[str, str]:
-            # P5: timeout comes from .meridian.toml [databricks] status_timeout (default 8s)
-            t = cfg.databricks_status_timeout
-            if task_keys:
-                states = latest_task_states(cfg, job_id, task_keys, timeout=t)
-                return feat_id, task_run_display(states, task_keys)
-            else:
-                state = latest_run_state(cfg, job_id, timeout=t)
-                return feat_id, run_state_display(state)
-
-        with console.status("Fetching job statuses…"):
-            with ThreadPoolExecutor(max_workers=min(8, len(job_linked))) as pool:
-                futures = {
-                    pool.submit(_fetch, fid, jid, tkeys): fid
-                    for fid, jid, tkeys in job_linked
-                }
-                for f in as_completed(futures):
-                    fid, display = f.result()
-                    job_states[fid] = display
 
     # ── Build table ────────────────────────────────────────────────────────
     table = Table(
@@ -363,8 +283,6 @@ def status(
     table.add_column("Conf", min_width=4)
     table.add_column("Cycle", min_width=8)
     table.add_column("Updated", min_width=10)
-    if has_jobs:
-        table.add_column("Job", min_width=14)
 
     counts: dict[str, int] = {}
     deps_warnings: list[str] = []
@@ -407,8 +325,6 @@ def status(
         row: list[str | Text] = [
             feat_id, name, goal, status_text, appetite_val, conf_display, cycle_val, updated,
         ]
-        if has_jobs:
-            row.append(job_states.get(feat_id, "[dim]∅[/dim]"))
         table.add_row(*row)
 
         # Collect dependency warnings
@@ -878,74 +794,6 @@ def search(
         console.print()
 
 
-# --------------------------------------------------------------------------- #
-# link-job  — Databricks integration
-# --------------------------------------------------------------------------- #
-
-@app.command("link-job")
-def link_job(
-    feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-007 or FEAT-007)"),
-    job: str = typer.Argument(..., help="Databricks job ID (numeric) or job name"),
-    task: list[str] | None = typer.Option(
-        None, "--task", "-t",
-        help="Task key within the job (repeat for multiple). Omit to track the whole job.",
-    ),
-):
-    """Link a Databricks job (and optionally specific tasks) to a feature spec."""
-    from meridian.databricks import DatabricksError, resolve_job
-
-    cfg = _config()
-    spec_path = _find_spec(cfg, feature_id)
-    assert spec_path is not None  # _find_spec exits when silent=False
-
-    with console.status(f"Resolving job [bold]{job}[/bold]…"):
-        try:
-            job_id, job_name = resolve_job(cfg, job)
-        except DatabricksError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise typer.Exit(1)
-
-    task_keys = list(task) if task else []
-    scheduler: dict = {"job_id": job_id, "job_name": job_name}
-    if task_keys:
-        scheduler["task_keys"] = task_keys
-
-    # FEAT-013: locked read-modify-write.
-    with edit_spec(spec_path) as data:
-        data["scheduler"] = scheduler
-    rebuild_registry(cfg.specs_path)
-
-    feat_id_str = str(data.get("id", feature_id)).upper()
-    task_note = f" [dim]tasks: {', '.join(task_keys)}[/dim]" if task_keys else ""
-    console.print(
-        f"[green]✓[/green] Linked [bold]{feat_id_str}[/bold] → "
-        f"Databricks job [bold]{job_name}[/bold] [dim](id: {job_id})[/dim]{task_note}"
-    )
-
-
-@app.command("unlink-job")
-def unlink_job(
-    feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-007 or FEAT-007)"),
-):
-    """Remove the Databricks job link from a feature spec."""
-    cfg = _config()
-    spec_path = _find_spec(cfg, feature_id)
-    assert spec_path is not None  # _find_spec exits when silent=False
-    if not load_spec(spec_path).get("scheduler"):
-        console.print(f"[dim]{feature_id.upper()} has no job linked.[/dim]")
-        raise typer.Exit(0)
-
-    # FEAT-013: locked read-modify-write. Re-read inside the lock so the value
-    # reported is the one actually cleared, not one observed before waiting.
-    with edit_spec(spec_path) as data:
-        old = data.get("scheduler") or {}
-        old_name = old.get("job_name", str(old.get("job_id", "?"))) if isinstance(old, dict) else str(old)
-        data["scheduler"] = None
-    rebuild_registry(cfg.specs_path)
-
-    feat_id_str = str(data.get("id", feature_id)).upper()
-    console.print(f"[green]✓[/green] Unlinked [bold]{feat_id_str}[/bold] (was: {old_name})")
-
 
 # --------------------------------------------------------------------------- #
 # index
@@ -1158,10 +1006,6 @@ def init_project(
         'ollama_model   = "mxbai-embed-large"\n'
         'reranker_model = "BAAI/bge-reranker-v2-m3"\n'
         'ollama_vision_model = ""   # optional: fallback describer for `enrich --vision`\n'
-        "\n"
-        "[databricks]\n"
-        'host      = ""\n'
-        'token_env = "DATABRICKS_TOKEN"\n'
     )
     toml_path.write_text(toml_content)
     console.print("  [green]✓[/green] .meridian.toml")
@@ -1686,311 +1530,38 @@ def install_skills(
     )
 
 # --------------------------------------------------------------------------- #
-# help  — static manual
+# help  — derived from the registered commands, so it cannot drift
 # --------------------------------------------------------------------------- #
 
 @app.command(name="help")
 def help_cmd():
-    """Show the Meridian manual — commands, workflow, and config reference."""
+    """List every command, generated from the app itself.
+
+    FEAT-014: this was a 309-line hand-written manual — 16% of cli.py — and it
+    had already drifted: `link-job` and `unlink-job` were registered commands
+    that appeared nowhere in it. Deriving the list from the Typer app makes that
+    class of drift impossible. Use `meridian <command> --help` for flags.
+    """
     console.print()
-    console.rule("[bold]Meridian — Navigate your codebase with purpose[/bold]")
-
-    # ── Workflow diagram ───────────────────────────────────────────────────── #
-    console.print()
-    console.print("  [bold]How it works[/bold]")
+    console.print("  [bold]Meridian[/bold] — navigate your codebase with purpose")
     console.print()
 
-    # 1 · STRATEGY
-    console.print(_box_top("1 · STRATEGY", "bold magenta"))
-    console.print(_box_row("[yellow]/vision[/yellow]    [dim]→[/dim]  VISION.md  [dim](north star)[/dim]"))
-    console.print(_box_row("[yellow]/goal new[/yellow]  [dim]→[/dim]  goals/goal-NN.md"))
-    console.print(_box_bot())
+    table = Table(box=box.SIMPLE, show_header=False, pad_edge=False)
+    table.add_column("Command", style="cyan", no_wrap=True, min_width=22)
+    table.add_column("What it does")
 
-    console.print(_connector())
-    console.print(_connector())
+    # Registration order, deliberately: it follows the workflow (status → new →
+    # close → …) rather than the alphabet. Sorting by `name` would also be a
+    # no-op, since `@app.command()` leaves it None and Typer derives it later.
+    for command in app.registered_commands:
+        name = command.name or (command.callback.__name__.replace("_", "-")
+                                if command.callback else "?")
+        doc = (command.help or (command.callback.__doc__ or "")).strip().splitlines()
+        table.add_row(f"meridian {name}", doc[0] if doc else "")
 
-    # 2 · CAPTURE  (keep content ≤ _HELP_W-2 visible chars)
-    console.print(_box_top("2 · CAPTURE", "bold blue"))
-    console.print(_box_row(
-        "[cyan]meridian new[/cyan] [dim]\"idea\" --appetite m[/dim]"
-        "  [dim]→[/dim]  spec.md  [green](💡 idea)[/green]"
-    ))
-    console.print(_box_bot())
-
-    console.print(_connector())
-    console.print(_connector("[yellow]/spec[/yellow]  [yellow]/breakdown[/yellow]"))
-
-    # 3 · ELABORATE
-    console.print(_box_top("3 · ELABORATE", "bold yellow"))
-    console.print(_box_row(
-        "[yellow]/spec[/yellow]  [dim]→[/dim]  spec.md  [dim](requirements + ACs)[/dim]"
-    ))
-    console.print(_box_row(
-        "[yellow]/breakdown[/yellow]  [dim]→[/dim]  breakdown.md  [dim](technical design)[/dim]"
-    ))
-    console.print(_box_row(
-        "[cyan]meridian enrich[/cyan] FEAT-NNN <src>  [dim]→[/dim]  LanceDB"
-    ))
-    console.print(_box_bot())
-
-    console.print(_connector())
-    console.print(_connector("[yellow]/tasks[/yellow]  [yellow]/plan[/yellow]"))
-
-    # 4 · PLAN
-    console.print(_box_top("4 · PLAN", "bold cyan"))
-    console.print(_box_row(
-        "[yellow]/tasks[/yellow]  [dim]→[/dim]  tasks.md  [dim](Pre: preconditions)[/dim]  [yellow](🔨 in-progress)[/yellow]"
-    ))
-    console.print(_box_row(
-        "[yellow]/plan[/yellow]   [dim]→[/dim]  plan.md   [dim](phased strategy — optional)[/dim]"
-    ))
-    console.print(_box_bot())
-
-    console.print(_connector())
-    console.print(_connector("[dim]build, commit…[/dim]"))
-
-    # 5 · BUILD
-    console.print(_box_top("5 · BUILD", "bold yellow"))
-    console.print(_box_row(
-        "[yellow]/challenge[/yellow]  [yellow]/connect-dots[/yellow]  [cyan]meridian search[/cyan]  [yellow](🔨 building)[/yellow]"
-    ))
-    console.print(_box_bot())
-
-    console.print(_connector())
-    console.print(_connector("[cyan]meridian close[/cyan] --status done"))
-
-    # 6 · SHIP
-    console.print(_box_top("6 · SHIP", "bold green"))
-    console.print(_box_row(
-        "[cyan]meridian transition[/cyan] --from-merge <branch>  [green](🚀 live)[/green]"
-    ))
-    console.print(_box_bot())
-
+    console.print(table)
     console.print()
-    console.print(
-        "  [dim]CLI commands [cyan]cyan[/cyan] — handle operations.  "
-        "Slash commands [yellow]yellow[/yellow] — handle reasoning.[/dim]"
-    )
-
-    # ── Overview ──────────────────────────────────────────────────────────── #
+    console.print("  [dim]Flags for any command:[/dim] [cyan]meridian <command> --help[/cyan]")
+    console.print("  [dim]Skills run in Claude Code as[/dim] [cyan]/meridian:spec[/cyan][dim], "
+                  "[/dim][cyan]/meridian:tasks[/cyan][dim], …[/dim]")
     console.print()
-    console.print(
-        "  Meridian is a spec-first, AI-native development OS: "
-        "[bold]capture → shape → plan → build → ship[/bold].\n"
-        "  It lives inside your project as a CLI tool ([bold]meridian[/bold]) "
-        "plus Claude Code slash commands ([bold]/spec[/bold], [bold]/tasks[/bold], …).\n"
-        "  The [bold]CLI[/bold] handles operations (create, transition, search, enrich, cycle).\n"
-        "  The [bold]skills[/bold] handle reasoning (elaborate, decompose, plan, challenge, decide).\n"
-        "  [bold]STEERING.md[/bold] injects project context into every skill run."
-    )
-
-    # ── Lifecycle ─────────────────────────────────────────────────────────── #
-    console.print()
-    console.print("  [bold]Lifecycle states[/bold]")
-    console.print()
-    lifecycle_table = Table(box=box.SIMPLE, show_header=False, pad_edge=False, show_edge=False)
-    lifecycle_table.add_column("State", style="bold", min_width=16)
-    lifecycle_table.add_column("Meaning")
-    lifecycle_table.add_column("Next", style="dim")
-    rows = [
-        ("💡 idea",          "Raw capture — stub spec, no ACs yet",                "→ draft  (run /spec)"),
-        ("📝 draft",         "Spec elaborated; breakdown + tasks pending",          "→ in-progress  (run /tasks)"),
-        ("🔨 in-progress",   "Tasks generated; actively being built",               "→ blocked | done"),
-        ("🚫 blocked",       "Waiting on something external",                       "→ in-progress"),
-        ("✅ done",           "Built, not yet released — review spec.md for drift", "→ in-production"),
-        ("🚀 in-production", "Live",                                                "→ done (rollback)"),
-        ("🗑  abandoned",    "Will not be built",                                   "→ idea (revive)"),
-    ]
-    for state, meaning, nxt in rows:
-        lifecycle_table.add_row(state, meaning, nxt)
-    console.print(lifecycle_table)
-
-    # ── CLI commands ──────────────────────────────────────────────────────── #
-    console.print()
-    console.print("  [bold]CLI commands[/bold]")
-    console.print()
-    cli_table = Table(box=box.SIMPLE, show_header=True, header_style="bold dim",
-                      pad_edge=False, show_edge=False)
-    cli_table.add_column("Command", min_width=42)
-    cli_table.add_column("What it does")
-    cli_cmds = [
-        ('meridian status',
-         'Dashboard: status, task progress [N/M], confidence, cycle, deps'),
-        ('meridian new "idea text"',
-         'Quick-capture a new idea, create stub spec'),
-        ('meridian new "idea" --goal goal-01 --appetite m',
-         'Capture idea linked to a goal with appetite (xs|s|m|l)'),
-        ('meridian close feat-007 --status done',
-         'Transition lifecycle state; prints spec-drift reminder at done'),
-        ('meridian close feat-007 --status blocked --blocked-by <reason>',
-         'Block with reason — sets blocked_at for staleness tracking'),
-        ('meridian close feat-007 --status abandoned --abandoned-reason <r>',
-         'Abandon with reason — persists through revive for future context'),
-        ('meridian close feat-007 --confidence high',
-         'Update problem confidence: low | medium | high'),
-        ('meridian cycle feat-007 --set 2026-Q2',
-         'Assign to cycle; warns when cycle is overloaded'),
-        ('meridian cycle feat-007 --clear',
-         'Remove feature from any cycle'),
-        ('meridian enrich feat-007 report.pdf',
-         'Ingest PDF/URL/file into feature research corpus'),
-        ('meridian enrich feat-007 shot.png --note "what is wrong"',
-         'Ingest a screenshot + notes sidecar (image copied, notes embedded)'),
-        ('meridian enrich feat-007 --latest-screenshot --note "…"',
-         'Same, taking the newest image from the OS screenshot directory'),
-        ('meridian enrich feat-007 --from-clipboard --note "…"',
-         'Same, taking the image from the clipboard (macOS)'),
-        ('meridian enrich feat-007 shot.png --note-file notes.md',
-         'Read notes (and any agent visual reading) from a sidecar file'),
-        ('meridian enrich feat-007 shot.png --note "…" --vision',
-         'Fallback: also describe the image with the configured Ollama vision model'),
-        ('meridian install --all',
-         "Push skills into every tracked repo (+ --force, --dry-run)"),
-        ('meridian install --all --pr',
-         'Propose the skill update as a PR per repo — working trees untouched'),
-        ('meridian register',
-         'Track this repo so it shows up in the cross-project dashboard'),
-        ('meridian projects',
-         'List every tracked project'),
-        ('meridian status --all',
-         'Cross-project dashboard: every tracked repo at a glance'),
-        ('meridian search "drift detection"',
-         'Semantic search across this project\'s research (+ --feat, --limit, --no-rerank)'),
-        ('meridian search "drift detection" --all-projects',
-         'Widen the search to every Meridian project sharing the index'),
-        ('meridian index',
-         "Rebuild REGISTRY.md + this project's vector index"),
-        ('meridian index --vectors-only',
-         'Rebuild vectors only — leaves REGISTRY.md untouched (safe in other repos)'),
-        ('meridian transition --from-merge feat-007/slug',
-         'Auto-transition to in-production after merge (branch must contain feat-NNN)'),
-        ('meridian revive feat-007',
-         'Revive an abandoned feature back to idea state (preserves abandoned_reason)'),
-        ('meridian guide',
-         '8-step project advisor: vision → steering → goals → features → specs → research → cycles → tasks'),
-        ('meridian init',
-         'Bootstrap Meridian in a new project: .meridian.toml + specs/ + .claude/commands/meridian/'),
-        ('meridian install',
-         'Install skills globally (~/.claude/commands/meridian/) as /meridian:<name>; --project to pin, --force to refresh'),
-        ('meridian help',
-         'This manual'),
-    ]
-    for cmd, desc in cli_cmds:
-        cli_table.add_row(f"[cyan]{cmd}[/cyan]", desc)
-    console.print(cli_table)
-
-    # ── Slash commands ─────────────────────────────────────────────────────── #
-    console.print()
-    console.print("  [bold]Claude Code slash commands[/bold]")
-    console.print()
-    skill_table = Table(box=box.SIMPLE, show_header=True, header_style="bold dim",
-                        pad_edge=False, show_edge=False)
-    skill_table.add_column("Command", min_width=20)
-    skill_table.add_column("What it does")
-    skills = [
-        ("/vision",        "Read or update the project north star"),
-        ("/goal new",      "Create a validated strategic goal (6 checks)"),
-        ("/idea",          "Capture idea, map to goal, set appetite"),
-        ("/spec",          "Elaborate idea → spec.md with ACs; reads STEERING.md; sets status→draft"),
-        ("/breakdown",     "Technical design → breakdown.md; reads STEERING.md"),
-        ("/tasks",         "Ordered task list → tasks.md with Pre: preconditions; sets status→in-progress"),
-        ("/plan",          "Phased strategy → plan.md (for 'l' appetite features)"),
-        ("/roadmap",       "Goals × features × gaps view"),
-        ("/connect-dots",  "Surface cross-feature overlaps and dependencies"),
-        ("/challenge",     "Stress-test a feature against the vision"),
-        ("/decision",      "Write an Architecture Decision Record (ADR)"),
-        ("/ask",           "RAG Q&A — answer a question from enriched research"),
-        ("/research",      "Deep synthesis of all enriched sources for a feature"),
-        ("/brief",         "One-page paper brief (≤550 words) → summaries/"),
-    ]
-    for cmd, desc in skills:
-        skill_table.add_row(f"[cyan]{cmd}[/cyan]", desc)
-    console.print(skill_table)
-
-    # ── Spec frontmatter fields ───────────────────────────────────────────── #
-    console.print()
-    console.print("  [bold]Spec frontmatter fields[/bold]")
-    console.print()
-    fm_table = Table(box=box.SIMPLE, show_header=True, header_style="bold dim",
-                     pad_edge=False, show_edge=False)
-    fm_table.add_column("Field", min_width=14)
-    fm_table.add_column("Values")
-    fm_table.add_column("Purpose")
-    fm_rows = [
-        ("status",      "idea|draft|in-progress|blocked|done|in-production|abandoned",
-         "Lifecycle state (guarded transitions)"),
-        ("appetite",    "xs | s | m | l",
-         "How much time this is worth — set before writing spec"),
-        ("confidence",  "low | medium | high",
-         "How well the problem is understood (hill chart proxy)"),
-        ("cycle",       "e.g. 2026-Q2",
-         "Planning cycle this is bet on; set with meridian cycle"),
-        ("depends_on",  "list of feat IDs",
-         "Explicit dependencies — surfaced in meridian status"),
-        ("enables",     "list of feat IDs",
-         "Features this unlocks — surfaced in meridian status"),
-        ("blocked_by",  "string or feat ID",
-         "Required when status: blocked"),
-        ("blocked_at",  "ISO date",
-         "Set automatically on block; cleared on unblock (staleness detection)"),
-        ("abandoned_reason", "string",
-         "Why it was killed — persists through revive for future context"),
-        ("abandoned_at", "ISO date",
-         "Set automatically on abandon; cleared on revive"),
-    ]
-    for field, values, purpose in fm_rows:
-        fm_table.add_row(f"[cyan]{field}[/cyan]", f"[dim]{values}[/dim]", purpose)
-    console.print(fm_table)
-
-    # ── Config ────────────────────────────────────────────────────────────── #
-    console.print()
-    console.print("  [bold]Config — .meridian.toml[/bold]")
-    console.print()
-    toml_example = (
-        r"  \[meridian]" + "\n"
-        "  project        = \"my-repo\"                    # scopes this repo in the shared index\n"
-        "  specs_path     = \"specs\"                      # where FEAT-NNN/ dirs live\n"
-        "  lancedb_path   = \"~/.meridian/lancedb\"        # vector store (global by default)\n"
-        "  ollama_model   = \"mxbai-embed-large\"          # embedding model\n"
-        "  reranker_model = \"BAAI/bge-reranker-v2-m3\"   # optional cross-encoder\n"
-        "  ollama_vision_model = \"\"                     # optional: fallback screenshot describer\n"
-        "\n"
-        r"  \[databricks]" + "\n"
-        "  host      = \"https://your-workspace.azuredatabricks.net\"\n"
-        "  token_env = \"DATABRICKS_TOKEN\"                # env var holding the PAT"
-    )
-    console.print(f"  [dim]{toml_example}[/dim]")
-
-    # ── Specs structure ───────────────────────────────────────────────────── #
-    console.print()
-    console.print("  [bold]Specs directory layout[/bold]")
-    console.print()
-    console.print(
-        "  [dim]"
-        "specs/\n"
-        "  VISION.md                ← project north star\n"
-        "  STEERING.md              ← AI context: conventions + standards\n"
-        "  CYCLES.md                ← current betting cycle + icebox\n"
-        "  SKILLS.md                ← workflow guide\n"
-        "  REGISTRY.md              ← auto-generated feature index\n"
-        "  goals/                   ← one .md per strategic goal\n"
-        "  decisions/               ← Architecture Decision Records\n"
-        "  FEAT-NNN_slug/\n"
-        "    spec.md                ← requirements + acceptance criteria\n"
-        "    breakdown.md           ← technical design\n"
-        "    tasks.md               ← atomic work units (AI-executable)\n"
-        "    plan.md                ← phased strategy (optional)\n"
-        "    sources/               ← raw PDFs, text, pages, screenshots + .notes.md sidecars\n"
-        "    summaries/             ← AI-generated summaries"
-        "[/dim]"
-    )
-
-    console.print()
-    console.rule()
-    console.print(
-        "\n  [dim]Run [bold]meridian guide[/bold] to check your project's setup status.[/dim]\n"
-    )
-
-
-if __name__ == "__main__":
-    app()

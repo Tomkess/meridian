@@ -108,10 +108,6 @@ def proj(tmp_path: Path) -> Path:
         "[meridian]\n"
         'specs_path = "specs"\n'
         f'lancedb_path = "{lancedb}"\n'
-        "\n"
-        "[databricks]\n"
-        'host = ""\n'
-        'token_env = "DATABRICKS_TOKEN"\n'
     )
     return tmp_path
 
@@ -171,7 +167,7 @@ class TestVersion:
         r = run(["--help"], proj)
         expected_cmds = [
             "status", "new", "close", "cycle", "enrich", "search",
-            "link-job", "unlink-job", "index", "transition", "revive",
+            "index", "transition", "revive",
             "guide", "help",
         ]
         for cmd in expected_cmds:
@@ -522,7 +518,11 @@ class TestInit:
             cfg = tomllib.load(f)
         assert "meridian" in cfg
         assert cfg["meridian"]["specs_path"] == "specs"
-        assert "databricks" in cfg
+        assert cfg["meridian"]["project"], "the project slug scopes the shared index"
+        assert "databricks" not in cfg, (
+            "FEAT-014: the Databricks integration was removed — the generated "
+            "config must not advertise a vendor section that does nothing."
+        )
 
     def test_prints_next_steps(self, tmp_path: Path) -> None:
         r = run(["init", "--path", str(tmp_path)], tmp_path)

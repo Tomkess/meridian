@@ -31,7 +31,7 @@ Edit `specs/STEERING.md` with:
 - Domain glossary (project-specific terms)
 - AI behavior notes (how Claude should work in this codebase)
 
-This file is injected into every `/spec`, `/breakdown`, `/tasks`, and `/plan` run.
+This file is injected into every `/spec`, `/breakdown`, and `/tasks` run.
 
 ### 3. Define strategic goals
 ```
@@ -69,7 +69,6 @@ Ingests source, extracts text, indexes into LanceDB vector store.
 
 ### 6. Check relationships
 ```
-/connect-dots
 ```
 Surfaces overlaps, dependencies, and synergies with existing specs and goals.
 
@@ -97,7 +96,6 @@ Writes `tasks.md`. Sets status → `in-progress`.
 
 ### 10. Plan phases (optional)
 ```
-/plan feat-007
 ```
 Phased strategy for larger features (appetite `l` or multi-team). Writes `plan.md`. Optional — skip
 for xs/s appetite features where tasks.md is sufficient.
@@ -153,7 +151,6 @@ meridian close feat-007 --confidence high            # update problem confidence
 | `spec.md` | `/spec` | **What** — requirements, ACs, appetite, confidence |
 | `breakdown.md` | `/breakdown` | **How** — architecture, data model, components |
 | `tasks.md` | `/tasks` | **Work units** — ordered, checkable, AI-executable; each task has `Pre:` precondition |
-| `plan.md` | `/plan` | **Phases** — sequence, milestones (optional) |
 | `sources/` | `meridian enrich` | Raw research corpus |
 | `summaries/` | `/spec`, `/brief` | AI-generated summaries; `*-brief.md` = one-page paper briefs |
 
@@ -184,12 +181,8 @@ meridian close feat-007 --confidence high            # update problem confidence
 | `/goal review` | Re-validate all goals |
 | `/idea` | Capture + map idea to goal (asks appetite) |
 | `/spec` | Elaborate into structured spec + ACs |
-| `/connect-dots` | Cross-feature awareness |
 | `/breakdown` | Technical decomposition → breakdown.md |
 | `/tasks` | Atomic task list → tasks.md (triggers in-progress) |
-| `/plan` | Phased strategy → plan.md (optional) |
-| `/roadmap` | Goals × features × gaps view |
-| `/challenge` | Stress-test against vision |
 | `/decision` | Write ADR |
 | `/ask [question]` | RAG Q&A — answer a question from enriched research |
 | `/research <feat>` | Deep synthesis — what we know, gaps, next actions |

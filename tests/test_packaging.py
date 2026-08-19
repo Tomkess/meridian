@@ -88,3 +88,39 @@ class TestLockfile:
         script = (REPO_ROOT / "scripts" / "release.sh").read_text()
         assert "uv run --locked python -m pytest" in script
         assert "uv lock --check" in script
+
+
+class TestSurfaceStaysCut:
+    """FEAT-014 removed vendor coupling and four low-value skills.
+
+    These guard the deletions: each is the kind of thing that creeps back in
+    without anyone deciding to bring it back.
+    """
+
+    def test_databricks_module_is_gone(self) -> None:
+        assert not (REPO_ROOT / "meridian" / "databricks.py").exists()
+
+    def test_no_databricks_references_in_source(self) -> None:
+        import re
+
+        offenders = []
+        for path in (REPO_ROOT / "meridian").rglob("*.py"):
+            if re.search(r"databricks", path.read_text(), re.IGNORECASE):
+                offenders.append(path.name)
+        assert not offenders, f"Databricks references remain in: {offenders}"
+
+    def test_deleted_skills_stay_deleted(self) -> None:
+        bundled = REPO_ROOT / "meridian" / "skills" / "commands"
+        dogfood = REPO_ROOT / ".claude" / "commands" / "meridian"
+        for name in ("plan.md", "challenge.md", "roadmap.md", "connect-dots.md"):
+            assert not (bundled / name).exists(), f"{name} came back in the package"
+            assert not (dogfood / name).exists(), f"{name} came back in .claude"
+
+    def test_help_is_generated_not_hand_written(self) -> None:
+        """The 309-line manual drifted — link-job/unlink-job were undiscoverable.
+
+        Deriving the listing from `app.registered_commands` makes that
+        impossible, so assert the derivation rather than the output.
+        """
+        source = (REPO_ROOT / "meridian" / "cli.py").read_text()
+        assert "app.registered_commands" in source
