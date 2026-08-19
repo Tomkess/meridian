@@ -13,7 +13,7 @@ goal: '~'
 id: feat-014
 name: 'Cut surface: remove Databricks, four low-value skills, and the hand-written
   manual'
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-19'
 ---
