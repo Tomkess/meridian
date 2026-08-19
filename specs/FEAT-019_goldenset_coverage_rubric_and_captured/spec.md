@@ -12,7 +12,7 @@ enables: []
 goal: '~'
 id: feat-019
 name: 'Golden-set coverage: rubric and captured runs for the remaining skills'
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-19'
 ---
