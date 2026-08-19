@@ -352,6 +352,34 @@ class TestRebuildRegistry:
         assert "goal-01" in content
         assert "My First Goal" in content
 
+    def test_malformed_goal_does_not_crash_the_rebuild(
+        self, specs_dir: Path, capsys
+    ):
+        # FEAT-013's failure shape: rebuild_registry runs after a spec is already
+        # saved, so raising here strands the user with a stale registry and a
+        # traceback. The bad goal must be reported, not fatal.
+        from tests.conftest import make_goal
+        make_goal(specs_dir, "goal-01", "Good Goal")
+        create_spec(specs_dir, "a feature")
+        broken = specs_dir / "goals" / "goal-99.md"
+        broken.write_text("---\nid: [unclosed\nname: broken\n---\n\nBody.\n")
+
+        rebuild_registry(specs_dir)
+
+        content = (specs_dir / "REGISTRY.md").read_text()
+        assert "unparseable" in content          # surfaced, not silently dropped
+        assert "goal-99" in content
+        assert "goal-01" in content              # the good goal still indexed
+        assert "FEAT-001" in content             # and the feature rows still write
+        assert "goals/goal-99.md" in capsys.readouterr().err
+
+    def test_unreadable_goal_bytes_do_not_crash_the_rebuild(self, specs_dir: Path):
+        goals = specs_dir / "goals"
+        goals.mkdir(parents=True, exist_ok=True)
+        (goals / "goal-98.md").write_bytes(b"---\n\xff\xfe not utf-8\n---\n")
+        rebuild_registry(specs_dir)
+        assert "unparseable" in (specs_dir / "REGISTRY.md").read_text()
+
 
 # ── decisions in the registry (FEAT-021) ─────────────────────────────────── #
 

@@ -465,10 +465,22 @@ def rebuild_registry(specs_dir: Path) -> None:
     specs.sort(key=lambda s: (STATUS_ORDER.get(s.get("status", "idea"), 99), s.get("id", "")))
 
     goals_dir = specs_dir / "goals"
-    goals = []
+    goals: list[dict[str, Any]] = []
     if goals_dir.exists():
         for gf in sorted(goals_dir.glob("*.md")):
-            gp = frontmatter.load(str(gf))
+            try:
+                gp = frontmatter.load(str(gf))
+            except Exception as e:
+                # FEAT-013's exact failure shape: rebuild_registry runs *after* a
+                # spec has been written to disk, so raising here leaves the spec
+                # saved, the registry stale, and the user with a traceback. Specs
+                # and decisions were guarded; goals were the last unguarded loop.
+                print(
+                    f"[meridian] Warning: could not load goals/{gf.name}: {e}",
+                    file=sys.stderr,
+                )
+                goals.append({"id": gf.stem, "name": gf.stem, "status": "unparseable"})
+                continue
             goals.append({
                 "id": gp.metadata.get("id", gf.stem),
                 "name": gp.metadata.get("name", gf.stem),
