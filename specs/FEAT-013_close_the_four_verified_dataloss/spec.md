@@ -15,7 +15,7 @@ name: 'Close the four verified data-loss defects: atomic locked spec writes, unl
   registry, atomic index, contract-tested skills'
 scheduler: null
 sources: []
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-19'
 ---
