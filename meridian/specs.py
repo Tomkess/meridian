@@ -21,8 +21,11 @@ VALID_TRANSITIONS: dict[str, tuple[str, ...]] = {
     "draft":         ("in-progress", "abandoned"),
     "in-progress":   ("blocked", "done", "abandoned"),
     "blocked":       ("in-progress", "abandoned"),
-    "done":          ("in-production", "in-progress"),
-    "in-production": ("done",),
+    # FEAT-018: shipped features can be retired directly. Previously the only
+    # route to `abandoned` ran backwards through `in-progress`, which polluted
+    # the active-work counters on the dashboard.
+    "done":          ("in-production", "in-progress", "abandoned"),
+    "in-production": ("done", "abandoned"),
     "abandoned":     ("idea",),
 }
 
@@ -61,6 +64,40 @@ def feat_display_name(specs_path: Path, feat_id: str) -> str:
 # --------------------------------------------------------------------------- #
 # Spec I/O
 # --------------------------------------------------------------------------- #
+
+FEAT_ID = re.compile(r"^FEAT-\d{3,}$")
+
+
+class AmbiguousFeatureError(ValueError):
+    """More than one spec directory matches a feature ID."""
+
+
+def find_spec(specs_dir: Path, feature_id: str) -> Path | None:
+    """Resolve a feature ID to its spec.md, or None.
+
+    FEAT-018: replaces two near-identical globs that both interpolated the raw
+    user string and then took ``candidates[0]`` of an unsorted result. A glob
+    metacharacter in the ID silently matched a different feature — reported as
+    `meridian close 'feat-*' --status draft` transitioning FEAT-002 — and the
+    unsorted pick made the choice vary between machines.
+    """
+    feat_id_norm = feature_id.strip().upper()
+    if not FEAT_ID.match(feat_id_norm):
+        raise ValueError(
+            f"'{feature_id}' is not a feature ID. Expected the form FEAT-007."
+        )
+
+    candidates = sorted(specs_dir.glob(f"{feat_id_norm}_*/spec.md"))
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        names = ", ".join(c.parent.name for c in candidates)
+        raise AmbiguousFeatureError(
+            f"{feat_id_norm} matches more than one spec directory: {names}. "
+            "Rename or remove the duplicate."
+        )
+    return candidates[0]
+
 
 def load_spec(spec_path: Path) -> dict[str, Any]:
     post = frontmatter.load(str(spec_path))
@@ -344,6 +381,17 @@ def task_progress(feat_dir: Path) -> tuple[int, int] | None:
 STATUS_ORDER = {s: i for i, s in enumerate(VALID_STATUSES)}
 
 
+def _cell(value: Any) -> str:
+    """Render a value safe for a markdown table cell.
+
+    FEAT-018: a feature name containing a pipe or a newline shifted every
+    column of REGISTRY.md — which is a file the AI reads as a source of truth
+    about the project.
+    """
+    text = "" if value is None else str(value)
+    return text.replace("|", "\\|").replace("\r", " ").replace("\n", " ").strip()
+
+
 def rebuild_registry(specs_dir: Path) -> None:
     specs = all_specs(specs_dir)
     specs.sort(key=lambda s: (STATUS_ORDER.get(s.get("status", "idea"), 99), s.get("id", "")))
@@ -388,7 +436,11 @@ def rebuild_registry(specs_dir: Path) -> None:
         confidence = s.get("confidence") or "—"
         cycle = s.get("cycle") or "—"
         updated = s.get("updated", "—")
-        lines.append(f"| {feat_id} | {name} | {goal} | {status} | {appetite} | {confidence} | {cycle} | {updated} |")
+        lines.append(
+            "| " + " | ".join(_cell(v) for v in (
+                feat_id, name, goal, status, appetite, confidence, cycle, updated
+            )) + " |"
+        )
 
     if not specs:
         lines.append("| — | — | — | — | — | — | — | — |")
@@ -402,7 +454,9 @@ def rebuild_registry(specs_dir: Path) -> None:
     ]
 
     for g in goals:
-        lines.append(f"| {g['id']} | {g['name']} | {g['status']} |")
+        lines.append(
+            "| " + " | ".join(_cell(g[k]) for k in ("id", "name", "status")) + " |"
+        )
 
     if not goals:
         lines.append("| — | — | — |")

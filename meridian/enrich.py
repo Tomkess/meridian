@@ -123,8 +123,34 @@ def extract_text(source: str) -> str:
             f"{path.name} --note \"what is wrong\"\n"
             "Or point --note-file at a sidecar file holding the notes."
         )
-    # Treat everything else as plain text
-    return path.read_text(errors="replace")
+    # Treat everything else as plain text — but only if it really is text.
+    raw = path.read_bytes()
+    if not _looks_like_text(raw):
+        raise RuntimeError(
+            f"{path.name} does not look like text — refusing to embed it.\n"
+            "A .docx, .xlsx, archive or binary would be indexed as mojibake and "
+            "then retrieved by /ask as if it were research.\n"
+            "Convert it to text or PDF first."
+        )
+    return raw.decode("utf-8", errors="replace")
+
+
+def _looks_like_text(raw: bytes, sample: int = 4096) -> bool:
+    """Heuristic text sniff: no NUL bytes and mostly printable.
+
+    FEAT-018: `enrich` accepted any file and embedded the result, so
+    `head -c 2000 /dev/urandom` produced a cheerful "1 chunks embedded" and
+    left retrievable garbage in the corpus.
+    """
+    if not raw:
+        return True
+    head = raw[:sample]
+    if b"\x00" in head:
+        return False
+    printable = sum(
+        1 for b in head if 32 <= b < 127 or b in (9, 10, 13) or b >= 128
+    )
+    return printable / len(head) > 0.85
 
 
 # ─── Chunking ─────────────────────────────────────────────────────────────── #
@@ -306,8 +332,11 @@ def upsert_chunks(
     )
     try:
         table.delete(predicate)
-    except Exception:
-        pass
+    except Exception as e:
+        # FEAT-018: not silent. A failed delete leaves duplicate rows, which
+        # quietly degrades every later search — the exact thing the corpus exists
+        # to get right.
+        logger.warning("Could not clear existing rows for %s (%s)", source_name, e)
     rows = [
         {
             "project": project,
@@ -546,10 +575,13 @@ def save_screenshot(
 # ─── Main pipeline ────────────────────────────────────────────────────────── #
 
 def _find_spec_path(cfg: MeridianConfig, feat_id_norm: str) -> Path:
-    candidates = list(cfg.specs_path.glob(f"{feat_id_norm}_*/spec.md"))
-    if not candidates:
+    """FEAT-018: one validated resolver, shared with the CLI."""
+    from meridian.specs import find_spec
+
+    found = find_spec(cfg.specs_path, feat_id_norm)
+    if found is None:
         raise FileNotFoundError(f"No spec found for {feat_id_norm}")
-    return candidates[0]
+    return found
 
 
 def _append_sources(spec_path: Path, refs: list[str]) -> None:

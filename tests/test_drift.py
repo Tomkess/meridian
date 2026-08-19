@@ -167,3 +167,91 @@ class TestAssess:
 
         assert "seed.txt" in files
         assert "added.py" in files
+
+
+# ── FEAT-018 hardening ──────────────────────────────────────────────────────
+
+
+class TestFeatureIdResolution:
+    """One validated resolver, replacing two globs that took candidates[0]."""
+
+    def _specs(self, tmp_path: Path) -> Path:
+        d = tmp_path / "specs"
+        for name in ("FEAT-001_alpha", "FEAT-002_beta"):
+            (d / name).mkdir(parents=True)
+            (d / name / "spec.md").write_text("---\nid: x\n---\nbody\n")
+        return d
+
+    def test_resolves_a_valid_id(self, tmp_path: Path) -> None:
+        from meridian.specs import find_spec
+
+        specs = self._specs(tmp_path)
+        assert find_spec(specs, "feat-001").parent.name == "FEAT-001_alpha"
+
+    def test_glob_metacharacters_are_rejected(self, tmp_path: Path) -> None:
+        """Reported repro: `close 'feat-*'` silently transitioned FEAT-002."""
+        from meridian.specs import find_spec
+
+        specs = self._specs(tmp_path)
+        with pytest.raises(ValueError):
+            find_spec(specs, "feat-*")
+
+    def test_unknown_id_is_none_not_an_error(self, tmp_path: Path) -> None:
+        from meridian.specs import find_spec
+
+        assert find_spec(self._specs(tmp_path), "FEAT-404") is None
+
+    def test_duplicate_directories_raise(self, tmp_path: Path) -> None:
+        from meridian.specs import AmbiguousFeatureError, find_spec
+
+        specs = self._specs(tmp_path)
+        dupe = specs / "FEAT-001_duplicate"
+        dupe.mkdir()
+        (dupe / "spec.md").write_text("---\nid: x\n---\n")
+
+        with pytest.raises(AmbiguousFeatureError):
+            find_spec(specs, "FEAT-001")
+
+
+class TestRegistryCellEscaping:
+    def test_pipe_and_newline_do_not_break_the_table(self) -> None:
+        from meridian.specs import _cell
+
+        assert _cell("a | b") == r"a \| b"
+        assert _cell("two\nlines") == "two lines"
+        assert _cell(None) == ""
+
+
+class TestBinaryRejection:
+    def test_binary_file_is_refused(self, tmp_path: Path) -> None:
+        from meridian.enrich import extract_text
+
+        blob = tmp_path / "junk.bin"
+        blob.write_bytes(bytes(range(256)) * 8)
+
+        with pytest.raises(RuntimeError, match="does not look like text"):
+            extract_text(str(blob))
+
+    def test_real_text_still_works(self, tmp_path: Path) -> None:
+        from meridian.enrich import extract_text
+
+        doc = tmp_path / "notes.txt"
+        doc.write_text("Ordinary research prose, with accents: café, naïve.\n")
+
+        assert "café" in extract_text(str(doc))
+
+    def test_empty_file_is_text(self, tmp_path: Path) -> None:
+        from meridian.enrich import extract_text
+
+        doc = tmp_path / "empty.txt"
+        doc.write_text("")
+        assert extract_text(str(doc)) == ""
+
+
+class TestSunsettingAShippedFeature:
+    def test_done_can_be_abandoned_directly(self) -> None:
+        """Retiring a shipped feature should not walk backwards through in-progress."""
+        from meridian.specs import VALID_TRANSITIONS
+
+        assert "abandoned" in VALID_TRANSITIONS["done"]
+        assert "abandoned" in VALID_TRANSITIONS["in-production"]
