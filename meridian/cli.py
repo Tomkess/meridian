@@ -3,7 +3,6 @@ import os
 import re
 import sys
 import tempfile
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from rich.text import Text
 
 from meridian import __version__
 from meridian.config import load_config, slugify_project
+from meridian.skilldist import open_skill_prs, sync_all, sync_skills
 from meridian.specs import (
     APPETITE_LABELS,
     APPETITE_VALUES,
@@ -1410,214 +1410,15 @@ def projects(
 
 
 # --------------------------------------------------------------------------- #
-# skill sync helpers (FEAT-010)
+# skill sync rendering (FEAT-010; extracted to meridian/skilldist.py in FEAT-020)
+#
+# Everything that touches another repository lives in `meridian.skilldist` and
+# returns data. What is left here is presentation: tables, styles, totals and
+# the exit codes.
 # --------------------------------------------------------------------------- #
-
-@dataclass
-class SkillSync:
-    """What a skill install did, or would do."""
-    new: list[str]
-    changed: list[str]     # present but differs from the bundled version
-    current: list[str]     # byte-identical, nothing to do
-    written: int
-    removed: list[str] = field(default_factory=list)  # deleted upstream, pruned here
-
-    @property
-    def pending(self) -> int:
-        """Files that differ and were not written (needs --force)."""
-        return len(self.changed)
-
-
-def _bundled_skills_dir() -> Path:
-    import meridian as _meridian_pkg
-
-    return Path(_meridian_pkg.__file__).parent / "skills" / "commands"
-
-
-def _sync_skills(
-    dest: Path, *, force: bool, dry_run: bool, prune: bool = False
-) -> SkillSync:
-    """Copy bundled skills into *dest*, reporting drift.
-
-    Compares content rather than mere existence: "already installed" hides the
-    case that actually matters after an upgrade — a skill that is present but
-    stale. An outdated file is only overwritten with --force, so a project that
-    deliberately customised a skill is never silently clobbered.
-
-    Sync is additive unless *prune* is set. FEAT-016: a skill deleted from the
-    package used to linger in every repo forever, so removing one here changed
-    nothing anywhere — the four skills cut in FEAT-014 were still sitting in
-    five repos after a full propagation. Pruning is opt-in because deleting
-    files across ten repos is a bigger decision than updating them.
-    """
-    import shutil
-
-    src_dir = _bundled_skills_dir()
-    new: list[str] = []
-    changed: list[str] = []
-    current: list[str] = []
-    written = 0
-
-    if not dry_run:
-        dest.mkdir(parents=True, exist_ok=True)
-
-    for skill in sorted(src_dir.glob("*.md")):
-        target = dest / skill.name
-        if not target.exists():
-            new.append(skill.stem)
-        elif target.read_bytes() == skill.read_bytes():
-            current.append(skill.stem)
-            continue
-        else:
-            changed.append(skill.stem)
-            if not force:
-                continue
-
-        if not dry_run:
-            shutil.copy2(skill, target)
-        written += 1
-
-    removed: list[str] = []
-    if prune and dest.is_dir():
-        bundled_names = {s.name for s in src_dir.glob("*.md")}
-        for stale in sorted(dest.glob("*.md")):
-            if stale.name not in bundled_names:
-                removed.append(stale.stem)
-                if not dry_run:
-                    stale.unlink()
-
-    return SkillSync(
-        new=new, changed=changed, current=current, written=written, removed=removed
-    )
-
-
-def _git(args: list[str], cwd: Path, timeout: int = 60):
-    """Run git, capturing output. Never raises on a non-zero exit."""
-    import subprocess
-
-    return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout
-    )
-
-
-def _default_branch(repo: Path) -> str | None:
-    """The remote's default branch, e.g. 'main'. None when there is no remote."""
-    r = _git(["symbolic-ref", "refs/remotes/origin/HEAD"], repo)
-    if r.returncode == 0 and r.stdout.strip():
-        return r.stdout.strip().rsplit("/", 1)[-1]
-    # Fall back to asking the remote directly — refs/remotes/origin/HEAD is not
-    # always present on a clone made with --single-branch.
-    r = _git(["remote", "show", "origin"], repo, timeout=30)
-    if r.returncode == 0:
-        for line in r.stdout.splitlines():
-            if "HEAD branch:" in line:
-                return line.split(":", 1)[1].strip()
-    return None
-
-
-def _open_skill_pr(entry, version: str, *, dry_run: bool, prune: bool = False) -> tuple[str, str]:
-    """Propose a skill update to one repo as a pull request.
-
-    Returns (status, detail) for the summary table.
-
-    The copy happens inside a throwaway git worktree, never the repo's own
-    working tree: these are ten repos the user may have work in progress in, and
-    silently mutating a checkout — or moving its HEAD — is exactly the failure
-    this project has already been bitten by.
-    """
-    import shutil
-    import subprocess
-    import tempfile
-
-    if not (entry.path / ".git").exists():
-        return "skipped", "not a git repository"
-
-    if _git(["remote", "get-url", "origin"], entry.path).returncode != 0:
-        return "skipped", "no 'origin' remote"
-
-    base = _default_branch(entry.path)
-    if base is None:
-        return "skipped", "could not resolve the default branch"
-
-    branch = f"chore/meridian-skills-{version}"
-
-    fetch = _git(["fetch", "origin", base], entry.path, timeout=120)
-    if fetch.returncode != 0:
-        return "failed", f"fetch failed: {fetch.stderr.strip().splitlines()[-1:] or ''}"
-
-    if dry_run:
-        return "would open", f"{branch} → {base}"
-
-    tmp = Path(tempfile.mkdtemp(prefix="meridian-skills-"))
-    worktree = tmp / "wt"
-    try:
-        add = _git(
-            ["worktree", "add", "--detach", str(worktree), f"origin/{base}"],
-            entry.path, timeout=120,
-        )
-        if add.returncode != 0:
-            return "failed", f"worktree: {add.stderr.strip().splitlines()[-1:] or ''}"
-
-        _git(["checkout", "-B", branch], worktree)
-        result = _sync_skills(
-            worktree / ".claude" / "commands" / "meridian",
-            force=True, dry_run=False, prune=prune,
-        )
-        if not result.written and not result.removed:
-            return "current", "skills already match"
-
-        _git(["add", ".claude/commands/meridian"], worktree)
-        if not _git(["diff", "--cached", "--quiet"], worktree).returncode:
-            return "current", "no net change"
-
-        removed_note = f", {len(result.removed)} removed" if result.removed else ""
-        message = (
-            f"chore: update Meridian skills to {version}\n\n"
-            f"{len(result.new)} added, {len(result.changed)} updated{removed_note}. "
-            "Generated by `meridian install --all --pr`.\n"
-        )
-        commit = _git(["commit", "-m", message], worktree)
-        if commit.returncode != 0:
-            return "failed", "commit failed"
-
-        push = _git(["push", "-u", "origin", branch, "--force-with-lease"], worktree, timeout=180)
-        if push.returncode != 0:
-            return "failed", f"push failed: {(push.stderr.strip().splitlines() or [''])[-1]}"
-
-        existing = subprocess.run(
-            ["gh", "pr", "list", "--head", branch, "--json", "url", "--jq", ".[0].url"],
-            cwd=worktree, capture_output=True, text=True, timeout=60,
-        )
-        if existing.returncode == 0 and existing.stdout.strip():
-            return "updated", existing.stdout.strip()
-
-        pr = subprocess.run(
-            ["gh", "pr", "create", "--base", base, "--head", branch,
-             "--title", f"chore: update Meridian skills to {version}",
-             "--body",
-             f"Syncs `.claude/commands/meridian/` with Meridian {version}.\n\n"
-             f"- {len(result.new)} skill(s) added\n"
-             f"- {len(result.changed)} skill(s) updated\n"
-             + (f"- {len(result.removed)} skill(s) removed (no longer ship with "
-                f"Meridian): {', '.join(result.removed)}\n" if result.removed else "")
-             + "\n"
-             "Opened by `meridian install --all --pr`.\n"],
-            cwd=worktree, capture_output=True, text=True, timeout=120,
-        )
-        if pr.returncode != 0:
-            return "failed", (pr.stderr.strip().splitlines() or ["gh pr create failed"])[-1]
-        return "opened", pr.stdout.strip().splitlines()[-1] if pr.stdout.strip() else branch
-
-    except (OSError, subprocess.SubprocessError) as e:
-        return "failed", str(e)
-    finally:
-        _git(["worktree", "remove", "--force", str(worktree)], entry.path)
-        shutil.rmtree(tmp, ignore_errors=True)
-
 
 def _install_prs_to_all(*, dry_run: bool, prune: bool = False) -> None:
     """Open a skill-update PR in every tracked project (FEAT-010)."""
-    from meridian import __version__
     entries = _tracked_projects()
     if not entries:
         console.print(
@@ -1640,14 +1441,13 @@ def _install_prs_to_all(*, dry_run: bool, prune: bool = False) -> None:
         "opened": "green", "updated": "green", "would open": "cyan",
         "current": "dim", "skipped": "yellow", "failed": "red",
     }
-    for entry in sorted(entries, key=lambda e: e.slug):
-        if not entry.exists:
-            table.add_row(entry.slug, "[yellow]skipped[/yellow]", "path not found")
-            continue
-        with console.status(f"  {entry.slug}…"):
-            status_text, detail = _open_skill_pr(entry, version, dry_run=dry_run, prune=prune)
-        style = styles.get(status_text, "")
-        table.add_row(entry.slug, f"[{style}]{status_text}[/{style}]", detail)
+    outcomes = open_skill_prs(
+        entries, version, dry_run=dry_run, prune=prune,
+        progress=lambda slug: console.status(f"  {slug}…"),
+    )
+    for outcome in outcomes:
+        style = styles.get(outcome.status, "")
+        table.add_row(outcome.slug, f"[{style}]{outcome.status}[/{style}]", outcome.detail)
 
     console.print(table)
     console.print(
@@ -1657,12 +1457,7 @@ def _install_prs_to_all(*, dry_run: bool, prune: bool = False) -> None:
 
 
 def _install_to_all(*, force: bool, dry_run: bool, prune: bool = False) -> None:
-    """Refresh skills in every tracked project (FEAT-010).
-
-    The point of the project registry: after upgrading meridian, one command
-    brings every repo's committed skills up to date instead of ten manual
-    `--project` runs.
-    """
+    """Render `install --all` — the sync itself lives in `skilldist.sync_all`."""
     entries = _tracked_projects()
     if not entries:
         console.print(
@@ -1685,28 +1480,24 @@ def _install_to_all(*, force: bool, dry_run: bool, prune: bool = False) -> None:
     total_written = 0
     total_pending = 0
 
-    for entry in sorted(entries, key=lambda e: e.slug):
-        if not entry.exists:
-            table.add_row(entry.slug, "·", "·", "·", "[yellow]path not found — skipped[/yellow]")
+    for outcome in sync_all(entries, force=force, dry_run=dry_run, prune=prune):
+        if outcome.status != "synced":
+            colour = "yellow" if outcome.status == "skipped" else "red"
+            table.add_row(
+                outcome.slug, "·", "·", "·", f"[{colour}]{outcome.detail}[/{colour}]"
+            )
             continue
 
-        dest = entry.path / ".claude" / "commands" / "meridian"
-        try:
-            result = _sync_skills(dest, force=force, dry_run=dry_run, prune=prune)
-        except OSError as e:
-            table.add_row(entry.slug, "·", "·", "·", f"[red]{e.strerror or e}[/red]")
-            continue
-
-        total_written += result.written
+        total_written += outcome.written
         note = ""
-        if result.changed and not force:
-            total_pending += result.pending
-            note = f"[yellow]{result.pending} outdated — needs --force[/yellow]"
+        if outcome.changed and not force:
+            total_pending += outcome.changed
+            note = f"[yellow]{outcome.changed} outdated — needs --force[/yellow]"
         table.add_row(
-            entry.slug,
-            str(len(result.new)) if result.new else "[dim]·[/dim]",
-            str(len(result.changed)) if result.changed else "[dim]·[/dim]",
-            str(len(result.current)) if result.current else "[dim]·[/dim]",
+            outcome.slug,
+            str(outcome.new) if outcome.new else "[dim]·[/dim]",
+            str(outcome.changed) if outcome.changed else "[dim]·[/dim]",
+            str(outcome.current) if outcome.current else "[dim]·[/dim]",
             note,
         )
 
@@ -1796,7 +1587,7 @@ def install_skills(
     console.print(f"  Installing Meridian skills — [bold]{scope_label}[/bold]")
     console.print()
 
-    result = _sync_skills(dest, force=force, dry_run=dry_run, prune=prune)
+    result = sync_skills(dest, force=force, dry_run=dry_run, prune=prune)
 
     for name in result.new:
         console.print(f"  [green]+[/green] {name}")
