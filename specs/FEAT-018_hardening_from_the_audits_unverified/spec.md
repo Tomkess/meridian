@@ -13,7 +13,7 @@ goal: '~'
 id: feat-018
 name: 'Hardening from the audit''s unverified findings: validated feature IDs, safe
   registry cells, binary rejection, MERIDIAN_HOME redirect'
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-19'
 ---
