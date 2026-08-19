@@ -1,4 +1,5 @@
 """Tests for meridian/specs.py — state machine, I/O, slug, task progress, registry."""
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from meridian.specs import (
     next_feat_id,
     rebuild_registry,
     save_spec,
+    scan_decisions,
     task_progress,
     transition_spec,
 )
@@ -349,3 +351,126 @@ class TestRebuildRegistry:
         content = (specs_dir / "REGISTRY.md").read_text()
         assert "goal-01" in content
         assert "My First Goal" in content
+
+
+# ── decisions in the registry (FEAT-021) ─────────────────────────────────── #
+
+
+FRONTMATTER_ADR = """\
+---
+id: adr-001
+date: 2026-05-22
+status: accepted
+---
+
+# 001 — Modular chainable skills over monolithic pipeline
+
+**Decision:** Build each workflow step as a separate skill.
+"""
+
+SKILL_TEMPLATE_ADR = """\
+# 002 — Screenshots: the CLI captures, the agent describes
+
+**Status:** Superseded  \n**Date:** 2026-08-18  \n**Context:** FEAT-006
+
+## Decision
+The CLI captures the file, the agent describes the pixels.
+"""
+
+
+def make_decision(specs_dir: Path, filename: str, body: str) -> Path:
+    path = specs_dir / "decisions" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    return path
+
+
+class TestRegistryDecisions:
+    def test_section_present_even_with_no_adrs(self, specs_dir: Path):
+        rebuild_registry(specs_dir)
+        content = (specs_dir / "REGISTRY.md").read_text()
+        assert "## Decisions" in content
+
+    def test_missing_decisions_dir_is_fine(self, tmp_path: Path):
+        """Most projects have no ADRs at all — that is not an error."""
+        bare = tmp_path / "bare-specs"
+        bare.mkdir()
+        rebuild_registry(bare)
+        content = (bare / "REGISTRY.md").read_text()
+        assert "## Decisions" in content
+        assert scan_decisions(bare / "decisions") == []
+
+    def test_frontmatter_adr_title_and_status(self, specs_dir: Path):
+        make_decision(specs_dir, "001-modular-skills-over-monolith.md", FRONTMATTER_ADR)
+        rebuild_registry(specs_dir)
+        content = (specs_dir / "REGISTRY.md").read_text()
+        assert "| 001 | Modular chainable skills over monolithic pipeline | accepted |" in content
+
+    def test_skill_template_adr_without_frontmatter(self, specs_dir: Path):
+        """`/decision` writes no frontmatter — the status lives in a bold line."""
+        make_decision(specs_dir, "002-screenshot-capture.md", SKILL_TEMPLATE_ADR)
+        rebuild_registry(specs_dir)
+        content = (specs_dir / "REGISTRY.md").read_text()
+        assert "| 002 | Screenshots: the CLI captures, the agent describes | superseded |" in content
+
+    def test_link_resolves_to_a_real_file(self, specs_dir: Path):
+        """A skill must be able to open the ADR from the link in REGISTRY.md."""
+        make_decision(specs_dir, "003-lancedb-global-path.md", FRONTMATTER_ADR)
+        rebuild_registry(specs_dir)
+        content = (specs_dir / "REGISTRY.md").read_text()
+
+        targets = re.findall(r"\]\((decisions/[^)]+)\)", content)
+        assert targets == ["decisions/003-lancedb-global-path.md"]
+        # Links are relative to REGISTRY.md, which sits at the root of specs/
+        assert (specs_dir / targets[0]).is_file()
+
+    def test_decisions_section_comes_after_features(self, specs_dir: Path):
+        """Features are the primary content; a skill reads this file top to bottom."""
+        make_decision(specs_dir, "001-a.md", FRONTMATTER_ADR)
+        rebuild_registry(specs_dir)
+        content = (specs_dir / "REGISTRY.md").read_text()
+        assert content.index("## Features") < content.index("## Decisions")
+
+    def test_no_heading_falls_back_to_filename(self, specs_dir: Path):
+        make_decision(specs_dir, "004-cli-owns-ops.md", "Just a body, no heading.\n")
+        rebuild_registry(specs_dir)
+        content = (specs_dir / "REGISTRY.md").read_text()
+        assert "| 004 | cli owns ops | — |" in content
+
+    def test_malformed_adr_does_not_raise_and_is_marked(self, specs_dir: Path, capsys):
+        """FEAT-013's failure shape: the rebuild runs after a spec is on disk.
+
+        Raising here would leave the registry stale and the user with a
+        traceback, so a broken ADR becomes a visible row instead.
+        """
+        create_spec(specs_dir, "good feature")
+        make_decision(specs_dir, "001-good.md", FRONTMATTER_ADR)
+        make_decision(specs_dir, "002-broken.md", "---\nunclosed: [bracket\nstatus: x\n---\nbody\n")
+        make_decision(specs_dir, "003-later.md", FRONTMATTER_ADR.replace("001 —", "003 —"))
+
+        rebuild_registry(specs_dir)  # must not raise
+
+        content = (specs_dir / "REGISTRY.md").read_text()
+        assert "FEAT-001" in content                     # the rest of the registry survived
+        assert "| 002 | broken | unparseable |" in content
+        assert "003-later.md" in content                 # ADRs after the bad one still listed
+        assert "002-broken.md" in capsys.readouterr().err
+
+    def test_unreadable_bytes_do_not_raise(self, specs_dir: Path, capsys):
+        path = specs_dir / "decisions" / "005-binary.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe\x00\x00 not text at all")
+
+        rebuild_registry(specs_dir)  # must not raise
+
+        content = (specs_dir / "REGISTRY.md").read_text()
+        assert "| 005 | binary | unparseable |" in content
+        assert "005-binary.md" in capsys.readouterr().err
+
+    def test_pipe_in_title_does_not_shift_columns(self, specs_dir: Path):
+        """AC10's guarantee, extended to ADR rows."""
+        make_decision(specs_dir, "006-piped.md", "# 006 — A | B decision\n")
+        rebuild_registry(specs_dir)
+        content = (specs_dir / "REGISTRY.md").read_text()
+        row = next(ln for ln in content.splitlines() if ln.startswith("| 006 |"))
+        assert row.count("|") - row.count("\\|") == 5  # 4 cells → 5 unescaped delimiters
