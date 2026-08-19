@@ -12,7 +12,7 @@ enables: []
 goal: '~'
 id: feat-015
 name: 'Agent ergonomics: --json output, one-line errors, idempotent lifecycle commands'
-status: in-progress
+status: in-production
 tags: []
 updated: '2026-08-19'
 ---
