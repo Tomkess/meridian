@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — 2026-08-19
+
+- fix: resolve cwd in load_config so the project slug is never empty
+- fix: a malformed goal file no longer crashes rebuild_registry
+- refactor: extract skill distribution into meridian/skilldist.py (FEAT-020)
+- feat: stop committing the generated REGISTRY.md (FEAT-022)
+- feat: index architecture decision records in REGISTRY.md (FEAT-021)
+
 ## 0.4.0 — 2026-08-19
 
 Completes the audit follow-through: the spec-vs-code promise is now measured
