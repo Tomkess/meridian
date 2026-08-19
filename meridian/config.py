@@ -49,7 +49,13 @@ def _find_config_file(start: Path) -> Path | None:
 
 
 def load_config(cwd: Path | None = None) -> MeridianConfig:
-    cwd = cwd or Path.cwd()
+    # Resolve before searching. `root` is derived from the config file's parent,
+    # and a relative start makes that parent `Path(".")`, whose `.name` is "" —
+    # so the project slug fell back to `unknown-project`. That is the FEAT-007
+    # failure re-entering through a path gap: every repo loading a relative
+    # config shares one slug in the global index, and a rebuild in any of them
+    # deletes the others' rows.
+    cwd = (cwd or Path.cwd()).resolve()
     config_file = _find_config_file(cwd)
     if config_file is None:
         raise FileNotFoundError(
