@@ -1,4 +1,5 @@
 import hashlib
+import os
 import re
 import sys
 import tempfile
@@ -87,7 +88,50 @@ def save_spec(spec_path: Path, data: dict[str, Any]) -> None:
 
     data["updated"] = _today()
     post = frontmatter.Post(body, **data)
-    spec_path.write_text(frontmatter.dumps(post) + "\n")
+    _atomic_write(spec_path, frontmatter.dumps(post) + "\n")
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via a sibling temp file and os.replace.
+
+    FEAT-013: `Path.write_text` truncates before it writes, so a concurrent
+    reader — or a second writer racing between truncate and write — can observe
+    or persist a half-written spec. An audit reproduced exactly that: 4 of 75
+    concurrent `cycle` + `close` trials left a spec holding 4 frontmatter keys
+    and no body. os.replace is atomic within a filesystem, so a reader sees
+    either the old file or the new one, never a partial.
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+@contextmanager
+def edit_spec(spec_path: Path) -> Iterator[dict[str, Any]]:
+    """Locked read-modify-write of one spec.
+
+    FEAT-013: the lock previously guarded only `transition_spec`, while
+    `cycle`, `link-job`, `unlink-job` and `enrich` all did an unlocked
+    load → mutate → save. Yielding the loaded dict inside the lock makes the
+    safe path the easy one, so a new call site cannot silently opt out of it.
+
+    Mutate the yielded dict; it is saved on clean exit and left untouched if
+    the block raises.
+    """
+    with spec_lock(spec_path):
+        data = load_spec(spec_path)
+        yield data
+        save_spec(spec_path, data)
 
 
 def all_specs(specs_dir: Path) -> list[dict[str, Any]]:

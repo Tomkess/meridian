@@ -4,7 +4,13 @@ from pathlib import Path
 import pytest
 
 from meridian.home import registry_file
-from meridian.registry import all_projects, derive_purpose, find_project, register
+from meridian.registry import (
+    RegistryUnreadableError,
+    all_projects,
+    derive_purpose,
+    find_project,
+    register,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -73,11 +79,79 @@ class TestDegradation:
     def test_missing_registry_is_empty_list(self) -> None:
         assert all_projects() == []
 
-    def test_malformed_toml_degrades(self) -> None:
+    def test_malformed_toml_raises_instead_of_reporting_empty(self) -> None:
+        """FEAT-013: 'unreadable' must never be mistaken for 'empty'.
+
+        It was: all_projects() swallowed the parse error and returned [], and
+        the next write rewrote the file from that empty list — one stray byte
+        permanently deleted every registered project.
+        """
         path = registry_file()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("[[project]\nslug = broken")
-        assert all_projects() == []
+
+        with pytest.raises(RegistryUnreadableError):
+            all_projects()
+
+    def test_corrupt_registry_is_not_overwritten_by_register(self, tmp_path: Path) -> None:
+        """The destructive path: corrupt file, then register wipes it."""
+        path = registry_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        corrupt = "garbage [[[ not toml\n"
+        path.write_text(corrupt)
+
+        repo = tmp_path / "some-repo"
+        repo.mkdir()
+        with pytest.raises(RegistryUnreadableError):
+            register("some-repo", repo)
+
+        assert path.read_text() == corrupt, "a corrupt registry must be left intact"
+
+
+class TestSerialisation:
+    def test_newline_in_purpose_survives_round_trip(self, tmp_path: Path) -> None:
+        """FEAT-013: one newline used to make the file permanently unparseable."""
+        repo = tmp_path / "repo-a"
+        repo.mkdir()
+        register("repo-a", repo, "line one\nline two")
+
+        entries = all_projects()
+        assert len(entries) == 1
+        assert entries[0].purpose == "line one\nline two"
+
+    def test_quotes_and_backslashes_round_trip(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo-b"
+        repo.mkdir()
+        tricky = 'has "quotes", a \\ backslash, and a \ttab'
+        register("repo-b", repo, tricky)
+        assert all_projects()[0].purpose == tricky
+
+    def test_second_project_survives_a_tricky_first(self, tmp_path: Path) -> None:
+        """The actual damage: a bad value took every *other* project with it."""
+        a, b = tmp_path / "aaa", tmp_path / "bbb"
+        a.mkdir()
+        b.mkdir()
+        register("aaa", a, "ordinary purpose")
+        register("bbb", b, "nasty\npurpose")
+
+        assert {e.slug for e in all_projects()} == {"aaa", "bbb"}
+
+    def test_backup_written_before_overwrite(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo-c"
+        repo.mkdir()
+        register("repo-c", repo, "first")
+        register("repo-c", repo, "second")
+
+        backup = registry_file().with_suffix(registry_file().suffix + ".bak")
+        assert backup.exists(), "the previous registry should be recoverable"
+        assert "first" in backup.read_text()
+
+    def test_no_temp_file_left_behind(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo-d"
+        repo.mkdir()
+        register("repo-d", repo)
+        strays = [p.name for p in registry_file().parent.iterdir() if p.name.endswith(".tmp")]
+        assert strays == []
 
     def test_entry_without_slug_or_path_skipped(self) -> None:
         path = registry_file()

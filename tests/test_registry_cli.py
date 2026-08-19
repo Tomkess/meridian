@@ -81,9 +81,16 @@ class TestRegister:
 
         run(["register", "--name", "Custom Name", "--purpose", "Does a thing"], repo, home)
 
-        content = (home / "projects.toml").read_text()
-        assert 'slug    = "custom name"' in content
-        assert "Does a thing" in content
+        # Assert the parsed value, not the serialiser's whitespace — the
+        # registry is written by tomli_w now, and its exact spacing is not a
+        # contract.
+        import tomllib
+
+        with open(home / "projects.toml", "rb") as f:
+            doc = tomllib.load(f)
+        entry = doc["project"][0]
+        assert entry["slug"] == "custom name"
+        assert entry["purpose"] == "Does a thing"
 
     def test_outside_a_repo_errors_cleanly(self, tmp_path: Path, home: Path) -> None:
         scratch = tmp_path / "not-a-repo"

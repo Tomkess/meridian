@@ -3,6 +3,7 @@ Research ingestion pipeline: source → extract → chunk → embed → LanceDB.
 """
 import base64
 import datetime
+import logging
 import re
 import shutil
 import sys
@@ -12,6 +13,8 @@ from urllib.parse import urlparse
 import httpx
 
 from meridian.config import MeridianConfig
+
+logger = logging.getLogger(__name__)
 
 
 def _require_lancedb_compat(version_info: tuple[int, ...] | None = None) -> None:
@@ -198,6 +201,18 @@ def embed(text: str, model: str, base_url: str = "http://localhost:11434") -> li
             f"Ollama timed out while embedding (model: {model}).\n"
             "The model may still be loading — wait a moment and retry.\n"
             f"To check: ollama run {model} \"hello\""
+        )
+    except httpx.HTTPStatusError as e:
+        # FEAT-013: `raise_for_status()` sits inside this try, but only
+        # ConnectError and TimeoutException were caught — so the most common
+        # misconfiguration of all, a model that was never pulled, escaped as a
+        # raw traceback. Observed live: `meridian index` with an unknown model
+        # produced a 404 traceback instead of an actionable message.
+        raise RuntimeError(
+            f"Ollama rejected the embedding request for model '{model}' "
+            f"(HTTP {e.response.status_code}).\n"
+            f"Is the model pulled? Run: ollama pull {model}\n"
+            f"To list what is available: ollama list"
         )
 
 
@@ -539,14 +554,15 @@ def _find_spec_path(cfg: MeridianConfig, feat_id_norm: str) -> Path:
 
 def _append_sources(spec_path: Path, refs: list[str]) -> None:
     """Add ``sources/...`` refs to spec frontmatter, skipping ones already there."""
-    from meridian.specs import load_spec, save_spec
-    data = load_spec(spec_path)
-    sources_list = list(data.get("sources") or [])
-    added = [r for r in refs if r not in sources_list]
-    if not added:
-        return
-    data["sources"] = sources_list + added
-    save_spec(spec_path, data)
+    # FEAT-013: locked read-modify-write. Appending is especially race-prone —
+    # two concurrent enrichments each read the old list and one loses its entry.
+    from meridian.specs import edit_spec
+
+    with edit_spec(spec_path) as data:
+        sources_list = list(data.get("sources") or [])
+        added = [r for r in refs if r not in sources_list]
+        if added:
+            data["sources"] = sources_list + added
 
 
 def enrich_feature(cfg: MeridianConfig, feat_id: str, source: str) -> dict:
@@ -703,33 +719,21 @@ def _sidecar_image_ref(sidecar_path: Path) -> str:
 def reindex_all(cfg: MeridianConfig) -> dict:
     """Rebuild *this project's* slice of the LanceDB index from its sources.
 
+    Embeds everything **before** deleting anything. FEAT-013: the delete used to
+    come first, so a rebuild with Ollama unreachable destroyed the project's
+    whole corpus and then reported that it had not rebuilt the index — verified
+    as 4 chunks in, an error message, exit 0, 0 chunks out. Embedding first
+    means a failure leaves the existing rows untouched.
+
     Returns ``sources``, ``chunks``, and ``migrated`` — the last is True when a
     pre-FEAT-007 table was recreated, which wipes other projects' rows and means
-    each of them must run `meridian index` once to repopulate.
+    each of them must run `meridian index --vectors-only` once to repopulate.
     """
     _require_lancedb_compat()
     import lancedb
 
-    migrated = False
-    if cfg.lancedb_path.exists():
-        db = lancedb.connect(str(cfg.lancedb_path))
-        if "chunks" in db.table_names():
-            table = db.open_table("chunks")
-            if _is_legacy_schema(table):
-                # Pre-FEAT-007 rows carry no project, so there is no way to know
-                # which repo wrote them and no way to keep only ours. Recreating
-                # is the documented recovery path: chunks are derived data,
-                # rebuildable from each feature's sources/.
-                db.drop_table("chunks")
-                migrated = True
-            else:
-                # The whole point of FEAT-007: clear only our own rows and leave
-                # every other project's research intact.
-                try:
-                    table.delete(f"project = '{_sql_quote(cfg.project)}'")
-                except Exception:
-                    pass
-
+    # ── 1. embed everything first; any failure raises before we touch the store
+    pending: list[tuple[str, str, list[str], list[list[float]]]] = []
     total_chunks = 0
     total_sources = 0
     for sources_dir in sorted(cfg.specs_path.glob("FEAT-*/sources")):
@@ -747,9 +751,35 @@ def reindex_all(cfg: MeridianConfig) -> dict:
             else:
                 chunks = chunk_text(text)
             vectors = [embed(c, model=cfg.ollama_model) for c in chunks]
-            upsert_chunks(cfg.lancedb_path, cfg.project, feat_id, src_file.name,
-                          chunks, vectors)
+            pending.append((feat_id, src_file.name, chunks, vectors))
             total_chunks += len(chunks)
             total_sources += 1
+
+    # ── 2. only now is it safe to clear the old rows
+    migrated = False
+    if cfg.lancedb_path.exists():
+        db = lancedb.connect(str(cfg.lancedb_path))
+        if "chunks" in db.table_names():
+            table = db.open_table("chunks")
+            if _is_legacy_schema(table):
+                # Pre-FEAT-007 rows carry no project, so there is no way to know
+                # which repo wrote them and no way to keep only ours. Recreating
+                # is the documented recovery path: chunks are derived data,
+                # rebuildable from each feature's sources/.
+                db.drop_table("chunks")
+                migrated = True
+            else:
+                # The whole point of FEAT-007: clear only our own rows and leave
+                # every other project's research intact.
+                try:
+                    table.delete(f"project = '{_sql_quote(cfg.project)}'")
+                except Exception as e:
+                    # Not silent: a failed delete leaves duplicate rows, which
+                    # quietly degrades every later search.
+                    logger.warning("Could not clear existing rows for %s (%s)", cfg.project, e)
+
+    # ── 3. write the already-computed embeddings
+    for feat_id, source_name, chunks, vectors in pending:
+        upsert_chunks(cfg.lancedb_path, cfg.project, feat_id, source_name, chunks, vectors)
 
     return {"sources": total_sources, "chunks": total_chunks, "migrated": migrated}

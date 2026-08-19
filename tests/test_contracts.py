@@ -43,6 +43,12 @@ MERIDIAN_BIN = _find_binary()
 # ── source files to scan ─────────────────────────────────────────────────── #
 
 REPO_ROOT = Path(__file__).parents[1]
+# FEAT-013: scan the *bundled* skills as well as the dogfooded copies. The
+# bundled directory is the artifact that `meridian install` puts into other
+# repos, and until now no contract test read it — a shipped skill could invoke
+# a nonexistent subcommand or flag, pass the whole suite and the release gate,
+# and only fail in a downstream user's project.
+BUNDLED_COMMANDS_DIR = REPO_ROOT / "meridian" / "skills" / "commands"
 COMMANDS_DIR = REPO_ROOT / ".claude" / "commands" / "meridian"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 
