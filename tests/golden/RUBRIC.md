@@ -102,6 +102,107 @@ Score each output: ✅ must-have present · ⚠️ should-have missing · ❌ mu
 
 ---
 
+### `/vision` on the golden project (write-side, destructive)
+
+`/vision <text>` rewrites the north star in place. It is the only skill that
+overwrites a file whose previous contents are not recoverable from anywhere else,
+which is why it is scored strictly.
+
+| # | Must-have | Score |
+|---|---|---|
+| 1 | Existing vision is shown before any rewrite | |
+| 2 | Result is exactly one paragraph — no bullets, no headings inside it | |
+| 3 | The "How to use this file" section below the paragraph survives intact | |
+| 4 | Describes an end state, not a means or a roadmap | |
+| 5 | Confirms what was saved, quoting the new text | |
+
+| # | Should-have | Score |
+|---|---|---|
+| S1 | A too-long or tactical draft is tightened and the tightened version offered *before* writing | |
+| S2 | No implementation nouns (specific tools, file formats) in the paragraph | |
+
+### `/goal new` on the golden project
+
+| # | Must-have | Score |
+|---|---|---|
+| 1 | All six validation checks appear by name with a pass/flag/concern result each | |
+| 2 | Overlap check explicitly compares against `goal-01` | |
+| 3 | Coverage check lists existing idea/draft specs that would serve the goal | |
+| 4 | Confirmation is requested before writing | |
+| 5 | Frontmatter carries `id`, `name`, `status`, `created`, `horizon`, `measurable_outcome` | |
+| 6 | Next goal ID derived by scanning `specs/goals/`, not assumed | |
+
+| # | Should-have | Score |
+|---|---|---|
+| S1 | A goal that is really a feature is pushed back on as too granular | |
+| S2 | `measurable_outcome` is observable, not aspirational | |
+
+### `/idea` on the golden project
+
+| # | Must-have | Score |
+|---|---|---|
+| 1 | Idea restated in one sentence before anything is written | |
+| 2 | Mapped to a goal with the reasoning shown in one sentence | |
+| 3 | Overlap against REGISTRY checked and named if found | |
+| 4 | Appetite asked as a single inline question with the four values | |
+| 5 | `meridian new` invoked with `--goal`, and `--appetite` when given | |
+| 6 | Next step suggested (`/spec` or `enrich`) | |
+
+| # | Should-have | Score |
+|---|---|---|
+| S1 | An idea matching no goal is flagged rather than force-fitted | |
+| S2 | Only one clarifying question is asked at a time | |
+
+### `/enrich` on the golden project (write-side, corpus-polluting)
+
+The audit singled this out: `/enrich` writes prose into `sources/*.notes.md` that
+every later `/ask` retrieves **as fact**. A guess embedded here is indistinguishable
+from research forever after.
+
+| # | Must-have | Score |
+|---|---|---|
+| 1 | The image is described from what is actually visible — no inference about intent | |
+| 2 | Uncertainty is marked as uncertainty, never asserted | |
+| 3 | The user's note is preserved verbatim, not paraphrased | |
+| 4 | Sidecar carries the image reference so a retrieved chunk leads back to the file | |
+| 5 | `described_by` records which model produced the reading | |
+
+| # | Should-have | Score |
+|---|---|---|
+| S1 | Visible text is quoted exactly rather than summarised | |
+| S2 | The reading is ordered by prominence, not raster order | |
+
+### `/decision` on the golden project
+
+| # | Must-have | Score |
+|---|---|---|
+| 1 | Next ADR number derived by scanning `specs/decisions/` | |
+| 2 | All four sections present: Decision, Alternatives Considered, Consequences, Status | |
+| 3 | At least two genuine alternatives, each with pros *and* cons | |
+| 4 | The decision paragraph states what was decided and why in one paragraph | |
+| 5 | Filename is `NNN-<slug>.md` | |
+
+| # | Should-have | Score |
+|---|---|---|
+| S1 | Consequences include at least one negative — an ADR with no downside is not a decision | |
+| S2 | Context names the feature IDs or area affected | |
+
+### `/brief` — rubric only, no captured run
+
+`/brief` summarises a source document into `summaries/`. It has scoring criteria
+below but **no golden run**, because the golden project contains no source document
+to summarise and inventing one would test the fixture rather than the skill.
+Capturing this needs a real paper added to `tests/golden/research_assets/`.
+
+| # | Must-have | Score |
+|---|---|---|
+| 1 | Output is under 550 words | |
+| 2 | Fits one A4 page when rendered | |
+| 3 | Claims are attributable to the source, not the model's prior knowledge | |
+| 4 | Written to `summaries/`, not to the spec body | |
+
+---
+
 ## Consistency check
 
 Run `/spec` on FEAT-901 twice in separate Claude sessions. Compare outputs:
