@@ -412,6 +412,50 @@ def _check_tasks(specs_path: Path, specs: list[dict]) -> StepResult:
     )
 
 
+def _newest_source_mtime(specs_path: Path) -> float | None:
+    """Newest mtime among the files the registry is derived from."""
+    candidates = [
+        *specs_path.glob("*/spec.md"),
+        *(specs_path / "goals").glob("*.md"),
+        *(specs_path / "decisions").glob("*.md"),
+    ]
+    times = []
+    for f in candidates:
+        try:
+            times.append(f.stat().st_mtime)
+        except OSError:  # pragma: no cover - raced deletion
+            continue
+    return max(times) if times else None
+
+
+def _check_registry(specs_path: Path) -> StepResult:
+    subtitle = "REGISTRY.md — the generated index every skill reads to orient itself."
+    registry = specs_path / "REGISTRY.md"
+
+    # The registry is deliberately not committed (it is derived from tracked
+    # files, and merging it dropped rows). That makes "absent in a fresh clone"
+    # a normal state rather than a bug — but a silent one, since a skill reading
+    # a missing index simply sees no features. This check is what makes it loud.
+    if not registry.exists():
+        return StepResult(
+            9, "Registry", subtitle, "warn",
+            "No REGISTRY.md — generated, not committed, so a fresh clone starts without it. "
+            "Skills have no feature index until it is built.",
+            "Run: meridian index",
+        )
+
+    newest = _newest_source_mtime(specs_path)
+    if newest is not None and registry.stat().st_mtime < newest:
+        return StepResult(
+            9, "Registry", subtitle, "warn",
+            "REGISTRY.md is older than a spec, goal, or decision it indexes — skills are "
+            "reading a stale index.",
+            "Run: meridian index",
+        )
+
+    return StepResult(9, "Registry", subtitle, "ok", "REGISTRY.md present and current.", None)
+
+
 # ─── Public API ───────────────────────────────────────────── #
 
 def run_guide(cfg: MeridianConfig) -> list[StepResult]:
@@ -424,7 +468,11 @@ def run_guide(cfg: MeridianConfig) -> list[StepResult]:
     research = _check_research(cfg.specs_path, specs)
     cycles = _check_cycles(specs)
     tasks = _check_tasks(cfg.specs_path, specs)
-    return [vision, steering, goals_check, features_check, elaboration, research, cycles, tasks]
+    registry = _check_registry(cfg.specs_path)
+    return [
+        vision, steering, goals_check, features_check,
+        elaboration, research, cycles, tasks, registry,
+    ]
 
 
 def first_action(steps: list[StepResult]) -> str | None:

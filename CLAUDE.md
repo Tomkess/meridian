@@ -200,7 +200,7 @@ specs/
   STEERING.md        ← AI context: conventions + standards
   CYCLES.md          ← current betting cycle + icebox
   SKILLS.md          ← workflow guide
-  REGISTRY.md        ← auto-generated feature index
+  REGISTRY.md        ← auto-generated feature index (not committed — see below)
   goals/             ← strategic bets
   decisions/         ← ADRs
   FEAT-NNN_name/
@@ -210,6 +210,18 @@ specs/
     sources/
     summaries/
 ```
+
+### REGISTRY.md is generated, not tracked
+
+`specs/REGISTRY.md` is gitignored. Every row in it is derived from files that *are*
+tracked — spec frontmatter, `goals/`, `decisions/` — so committing it protected nothing
+while conflicting on nearly every merge, and hand-resolving those conflicts silently
+dropped rows.
+
+Any command that mutates specs (`new`, `close`, `cycle`, …) regenerates it, so a fresh
+clone is missing it for exactly one command. `meridian guide` reports it as a setup gap
+when absent, and as stale when a spec, goal, or decision is newer than the index — which
+is the failure mode that matters now that git no longer carries the file.
 
 ## Spec frontmatter fields
 
