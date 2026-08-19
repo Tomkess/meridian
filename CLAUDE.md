@@ -38,6 +38,7 @@ meridian search "query" --all-projects       # widen to every project sharing th
 meridian index                               # rebuild vector index + REGISTRY.md
 meridian index --vectors-only                # vectors only — leaves REGISTRY.md untouched
 meridian transition --from-merge <branch>    # auto-transition after git merge (branch: feat-NNN/slug)
+meridian drift <feat-id>                     # do the ACs match what the branch changed?
 meridian guide                               # project setup advisor
 meridian help                                # list every command
 ```
@@ -149,6 +150,21 @@ is a bigger decision than updating them. `--prune` touches only
 `.claude/commands/meridian/`, never a project's own commands.
 
 Add `--dry-run` to any of these to see what would change.
+
+## Drift detection
+
+`meridian drift <feat-id>` compares a feature's acceptance criteria against what its
+branch actually changed, and `close --status done` runs it automatically.
+
+Each AC names concrete things in backticks — functions, files, flags. If none of them
+appears anywhere in the diff, the AC is worth re-reading. It is a **heuristic, not a
+verdict**: an AC can be satisfied by code that uses different words. What it reliably
+catches is the common failure — an AC written during planning, never built, never
+removed from the spec.
+
+It refuses to judge when the current branch is not the feature's branch, and reports
+prose ACs (those naming nothing concrete) separately rather than counting them as
+failures.
 
 ## Machine-readable output
 

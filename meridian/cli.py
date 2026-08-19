@@ -553,12 +553,21 @@ def close(
             "helps if you revive this feature later.[/dim]"
         )
 
-    # Spec drift reminder when marking done
+    # FEAT-017: measure drift rather than printing a reminder nobody acts on.
     if status == "done":
-        console.print(
-            "  [dim]Reminder: review [bold]spec.md[/bold] and update it to reflect "
-            "what was actually built — specs drift during implementation.[/dim]"
-        )
+        from meridian.drift import assess
+
+        try:
+            report = assess(spec_path, cfg.root)
+        except Exception:  # pragma: no cover - never block a transition on this
+            report = None
+        if report is not None and report.criteria:
+            _render_drift(report, verbose=False)
+        else:
+            console.print(
+                "  [dim]Review [bold]spec.md[/bold] and update it to reflect what was "
+                "actually built — specs drift during implementation.[/dim]"
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -929,6 +938,123 @@ def index(
                 "  [dim]Index unchanged — existing chunks were left in place.[/dim]"
             )
             raise typer.Exit(1)
+
+
+# --------------------------------------------------------------------------- #
+# drift  — do the acceptance criteria still describe the code? (FEAT-017)
+# --------------------------------------------------------------------------- #
+
+def _render_drift(report, *, verbose: bool = True) -> int:
+    """Print a drift report. Returns the number of suspicious criteria."""
+    if not report.criteria:
+        console.print(
+            f"  [dim]{report.feat_id} has no acceptance criteria to check.[/dim]"
+        )
+        return 0
+
+    if not report.changed_files:
+        console.print(
+            f"  [yellow]⚠[/yellow]  No changes against [bold]{report.base}[/bold] — "
+            "nothing to compare the criteria to."
+        )
+        return 0
+
+    if not report.on_feature_branch:
+        # Comparing one feature's criteria against another feature's diff
+        # produces confident nonsense, so refuse rather than mislead.
+        console.print(
+            f"  [yellow]⚠[/yellow]  Current branch is [bold]{report.branch}[/bold], "
+            f"which does not look like {report.feat_id}'s branch."
+        )
+        console.print(
+            f"  [dim]Check out the branch that built {report.feat_id} — comparing its "
+            "criteria against unrelated changes says nothing.[/dim]"
+        )
+        return 0
+
+    uncovered = report.uncovered
+    checkable = report.checkable
+
+    if uncovered:
+        console.print(
+            f"  [yellow]⚠[/yellow]  {len(uncovered)} of {len(checkable)} checkable "
+            f"criteria name nothing found in this branch's diff:"
+        )
+        for criterion in uncovered:
+            refs = ", ".join(f"[cyan]{r}[/cyan]" for r in criterion.refs)
+            console.print(f"     [bold]{criterion.id}[/bold]  {criterion.text[:88]}")
+            console.print(f"        [dim]looked for:[/dim] {refs}")
+    else:
+        console.print(
+            f"  [green]✓[/green] All {len(checkable)} checkable criteria reference "
+            f"something this branch touched."
+        )
+
+    if verbose and report.unjudgeable:
+        console.print(
+            f"  [dim]{len(report.unjudgeable)} criteria name nothing concrete and "
+            "cannot be checked automatically.[/dim]"
+        )
+    if uncovered:
+        console.print(
+            "  [dim]A heuristic, not a verdict — an AC can be satisfied by code that "
+            "uses different words. Read the ones listed.[/dim]"
+        )
+    return len(uncovered)
+
+
+@app.command()
+def drift(
+    feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-013)"),
+    base: str = typer.Option("main", "--base", "-b", help="Branch to diff against"),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of a report",
+    ),
+) -> None:
+    """Check whether a feature's acceptance criteria match what its branch changed.
+
+    Meridian's premise is that a spec stays true; this is the first thing that
+    actually measures it. Each AC names functions, files and flags in backticks —
+    if none of them appears anywhere in the diff, the AC is worth re-reading.
+
+    Deliberately a heuristic. It reliably catches the common failure: an AC
+    written during planning, never built, never removed from the spec.
+    """
+    from meridian.drift import assess
+
+    cfg = _config()
+    spec_path = _find_spec(cfg, feature_id)
+    assert spec_path is not None  # _find_spec exits when silent=False
+
+    report = assess(spec_path, cfg.root, base=base)
+
+    if as_json:
+        _emit_json({
+            "feat_id": report.feat_id,
+            "base": report.base,
+            "changed_files": report.changed_files,
+            "criteria": [
+                {
+                    "id": c.id,
+                    "text": c.text,
+                    "refs": c.refs,
+                    "hits": c.hits,
+                    "covered": c.covered,
+                    "checkable": c.checkable,
+                }
+                for c in report.criteria
+            ],
+            "uncovered": [c.id for c in report.uncovered],
+        })
+
+    console.print()
+    console.print(
+        f"  [bold]{report.feat_id}[/bold] — {len(report.criteria)} criteria vs "
+        f"{len(report.changed_files)} changed file(s) against [bold]{base}[/bold]"
+    )
+    console.print()
+    _render_drift(report)
+    console.print()
 
 
 # --------------------------------------------------------------------------- #
