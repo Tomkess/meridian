@@ -151,6 +151,16 @@ is a bigger decision than updating them. `--prune` touches only
 
 Add `--dry-run` to any of these to see what would change.
 
+## Skill quality
+
+`tests/golden/` is the Layer-3 gate: captured runs of each skill against a fixture
+project, scored against `RUBRIC.md`. Re-capture before any breaking prompt change.
+
+Every bundled skill needs a captured run or a documented exemption — a test enforces
+it, because a gate covering part of the surface implies coverage that does not exist.
+Each run names its *regression-critical behaviour*: the thing a future prompt edit
+would plausibly break while looking like an improvement.
+
 ## Drift detection
 
 `meridian drift <feat-id>` compares a feature's acceptance criteria against what its

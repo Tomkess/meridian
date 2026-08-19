@@ -377,3 +377,66 @@ class TestFixtures:
         assert not (feat / "tasks.md").exists(), (
             "FEAT-904 must stay task-less so /tasks capture is a real generation"
         )
+
+
+# ── Coverage of the golden set (FEAT-019) ──────────────────────────────────── #
+
+GOLDEN_ROOT = Path(__file__).parent / "golden"
+RUNS_DIR = GOLDEN_ROOT / "runs"
+RUBRIC = GOLDEN_ROOT / "RUBRIC.md"
+BUNDLED_SKILLS = Path(__file__).parents[1] / "meridian" / "skills" / "commands"
+
+# A skill may go uncovered only with a reason recorded in the rubric.
+# `/brief` needs a real source document in research_assets/ to summarise;
+# inventing one would test the fixture rather than the skill.
+EXEMPT = {"brief"}
+
+
+def _skill_names() -> set[str]:
+    return {p.stem for p in BUNDLED_SKILLS.glob("*.md")}
+
+
+def _covered() -> set[str]:
+    """Skill names that have at least one captured run.
+
+    Run files are named `<skill>_<subject>.md` — `spec_feat-901.md`,
+    `goal_new_golden.md` — so the skill is the part before the first underscore.
+    """
+    return {p.stem.split("_")[0] for p in RUNS_DIR.glob("*.md")}
+
+
+def test_every_skill_has_a_run_or_a_recorded_exemption() -> None:
+    """FEAT-019: the audit found 10 of 15 skills unscored and the harness a month stale.
+
+    A quality gate covering a third of the surface is worse than none, because it
+    implies coverage that does not exist. This makes the gap fail loudly.
+    """
+    uncovered = _skill_names() - _covered() - EXEMPT
+    assert not uncovered, (
+        f"Skills with no golden run and no exemption: {sorted(uncovered)}. "
+        f"Capture a run in {RUNS_DIR}, or add a rubric section explaining why not."
+    )
+
+
+def test_exemptions_are_justified_in_the_rubric() -> None:
+    """An exemption must be argued in writing, not just listed in code."""
+    rubric = RUBRIC.read_text()
+    for skill in EXEMPT:
+        assert f"`/{skill}`" in rubric, f"/{skill} is exempt but unmentioned in RUBRIC.md"
+        assert "no captured run" in rubric, "the rubric must say why a skill is exempt"
+
+
+def test_exemptions_name_real_skills() -> None:
+    """A skill deleted upstream must not linger as a phantom exemption."""
+    assert EXEMPT <= _skill_names(), (
+        f"Exempt skills that no longer exist: {sorted(EXEMPT - _skill_names())}"
+    )
+
+
+def test_every_run_scores_itself_against_the_rubric() -> None:
+    """A captured run without a score is a transcript, not an evaluation."""
+    unscored = [
+        p.name for p in RUNS_DIR.glob("*_golden.md")
+        if "RUBRIC" not in p.read_text() and "Must-have" not in p.read_text()
+    ]
+    assert not unscored, f"Runs with no scoring table: {unscored}"
