@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4.0 — 2026-08-19
+
+Completes the audit follow-through: the spec-vs-code promise is now measured
+rather than asserted, and the quality gate covers the skills that could degrade
+silently.
+
+### Added
+
+- **`meridian drift <feat-id>`** — checks whether a feature's acceptance criteria
+  match what its branch actually changed, and runs automatically on
+  `close --status done`. Each AC names functions, files and flags in backticks;
+  if none appears in the diff, the AC is worth re-reading. A heuristic, and the
+  output says so — but it reliably catches the common failure: an AC written
+  during planning, never built, never removed.
+- **`meridian install --prune`** — removes skills that no longer ship with
+  Meridian. Sync was additive with no opt-out, so a skill deleted upstream
+  lingered in every repo forever.
+
+### Fixed
+
+- **`MERIDIAN_HOME` now redirects the vector store.** It never did: `init`
+  hardcoded `~/.meridian/lancedb` and `load_config` ignored the variable, so any
+  test or sandbox following the documented safety instruction still read and
+  wrote the real store. The most plausible mechanism behind the global store
+  being destroyed on 2026-08-18.
+- **Feature IDs are validated before use.** Two near-identical globs interpolated
+  the raw string and took `candidates[0]` of an unsorted result, so a glob
+  metacharacter hit the wrong feature and the pick varied between machines. One
+  resolver now validates `^FEAT-\d{3,}$` and refuses ambiguous matches.
+- **`enrich` refuses non-text input** instead of embedding mojibake that `/ask`
+  later returns as research.
+- **`REGISTRY.md` cells escape pipes and newlines**, so a feature name cannot
+  shift every column of a file the AI reads as truth.
+- **A failed LanceDB delete is logged**, not swallowed — silence there leaves
+  duplicate rows that degrade every later search.
+- **`done` and `in-production` can be abandoned directly**, instead of walking
+  backwards through `in-progress` and polluting the dashboard counters.
+
+### Testing
+
+- Golden-set coverage extended from 5 of 15 skills to **10 of 11**, with one
+  documented exemption. The previously uncovered skills were the write-side ones:
+  `/enrich`, which writes prose the corpus later returns as fact, and `/vision`,
+  which rewrites the north star unrecoverably.
+- Each captured run names its *regression-critical behaviour* — the thing a
+  future prompt edit would plausibly break while looking like an improvement.
+- Coverage cannot rot silently: a skill without a run or an argued exemption
+  fails the suite.
+
+608 tests, up from 567.
+
 ## 0.3.0 — 2026-08-19
 
 The release that followed a five-phase audit: four verified data-loss defects
