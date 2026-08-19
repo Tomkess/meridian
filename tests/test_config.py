@@ -64,3 +64,33 @@ class TestLoadConfigProject:
     def test_missing_config_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             load_config(tmp_path / "nowhere")
+
+    def test_relative_cwd_still_yields_the_directory_slug(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative start must not collapse the slug to `unknown-project`.
+
+        `root` comes from the config file's parent, so starting at `Path(".")`
+        gave a parent whose `.name` is "" — every repo then shared one slug in
+        the global index, and a rebuild in any of them deleted the others' rows.
+        That is exactly the cross-project deletion FEAT-007 exists to prevent.
+        """
+        root = _write_toml(tmp_path / "relative-repo", "[meridian]\n")
+        monkeypatch.chdir(root)
+        assert load_config(Path(".")).project == "relative-repo"
+        assert load_config(Path(".")).project != UNKNOWN_PROJECT
+
+    def test_relative_cwd_from_a_subdirectory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _write_toml(tmp_path / "nested-repo", "[meridian]\n")
+        (root / "specs" / "FEAT-001").mkdir(parents=True)
+        monkeypatch.chdir(root / "specs" / "FEAT-001")
+        assert load_config(Path(".")).project == "nested-repo"
+
+    def test_default_cwd_is_resolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _write_toml(tmp_path / "implicit-repo", "[meridian]\n")
+        monkeypatch.chdir(root)
+        assert load_config().project == "implicit-repo"
