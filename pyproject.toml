@@ -41,7 +41,7 @@ dev = [
 ]
 
 [project.scripts]
-meridian = "meridian.cli:app"
+meridian = "meridian.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

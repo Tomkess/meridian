@@ -152,6 +152,25 @@ _STATUS_COLUMNS = (
 )
 
 
+def _emit_json(payload) -> None:
+    """Print a JSON document and exit 0.
+
+    FEAT-015: skills shell out to this CLI and then parse Rich's box-drawing
+    out of the agent's context window. Structured output means they branch on
+    data instead of prose. Written straight to stdout — Rich would wrap and
+    colour it.
+
+    Compact rather than indented, measured on this repo's own dashboard:
+    table 5,912 bytes, indented JSON 5,876, compact 4,246. Pretty-printing
+    gave back none of the saving. Pipe through `python -m json.tool` when a
+    human needs to read it.
+    """
+    import json
+
+    print(json.dumps(payload, separators=(",", ":"), default=str))
+    raise typer.Exit(0)
+
+
 def _tracked_projects():
     """Read the registry, turning an unreadable one into a clear error.
 
@@ -255,11 +274,55 @@ def status(
         False, "--all", "-a",
         help="Show every tracked project instead of only this one",
     ),
+    as_json: bool = typer.Option(
+        False, "--json",
+        help="Emit machine-readable JSON instead of a table",
+    ),
 ):
     """Show full feature dashboard with lifecycle states."""
     if all_projects:
+        if as_json:
+            _emit_json({
+                "projects": [
+                    {
+                        "slug": e.slug,
+                        "path": str(e.path),
+                        "purpose": e.purpose,
+                        "exists": e.exists,
+                        "counts": _project_summary(e.path / "specs")
+                        if e.exists and (e.path / "specs").is_dir() else None,
+                    }
+                    for e in sorted(_tracked_projects(), key=lambda e: e.slug)
+                ]
+            })
         _status_all()
         raise typer.Exit(0)
+
+    if as_json:
+        cfg_json = _config()
+        _emit_json({
+            "project": cfg_json.project,
+            "features": [
+                {
+                    "id": str(s.get("id", "")).upper(),
+                    "name": s.get("name"),
+                    "status": s.get("status", "idea"),
+                    "appetite": s.get("appetite"),
+                    "confidence": s.get("confidence"),
+                    "cycle": s.get("cycle"),
+                    "goal": s.get("goal"),
+                    "updated": s.get("updated"),
+                    "depends_on": s.get("depends_on") or [],
+                    "enables": s.get("enables") or [],
+                    "blocked_by": s.get("blocked_by"),
+                    "tasks": (
+                        {"checked": tp[0], "total": tp[1]}
+                        if (tp := task_progress(Path(str(s["_path"])).parent)) else None
+                    ),
+                }
+                for s in all_specs(cfg_json.specs_path)
+            ],
+        })
 
     cfg = _config()
     specs = all_specs(cfg.specs_path)
@@ -475,6 +538,13 @@ def close(
 
     rebuild_registry(cfg.specs_path)
     feat_id_display = data.get("id", feature_id).upper()
+    if data.get("_unchanged"):
+        # FEAT-015: already in the target state is success, so a retrying agent
+        # is not stuck. Say so plainly rather than implying work was done.
+        console.print(
+            f"[green]✓[/green] [bold]{feat_id_display}[/bold] already [bold]{status}[/bold]"
+        )
+        raise typer.Exit(0)
     console.print(f"[green]✓[/green] [bold]{feat_id_display}[/bold] → [bold]{status}[/bold]")
 
     if status == "abandoned" and not abandoned_reason:
@@ -737,6 +807,9 @@ def search(
         False, "--all-projects",
         help="Search every Meridian project's research, not just this one",
     ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of a report",
+    ),
 ):
     """Semantic search across this project's enriched research."""
     from meridian.enrich import LegacyIndexError
@@ -767,6 +840,24 @@ def search(
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)
+
+    if as_json:
+        _emit_json({
+            "query": query,
+            "project": None if all_projects else cfg.project,
+            "results": [
+                {
+                    "project": r.get("project"),
+                    "feat_id": r.get("feat_id"),
+                    "label": result_label(r, cfg),
+                    "source_name": r.get("source_name"),
+                    "chunk_idx": r.get("chunk_idx"),
+                    "score": r.get("rerank_score", r.get("_distance")),
+                    "text": r.get("text"),
+                }
+                for r in results
+            ],
+        })
 
     if not results:
         scope_hint = (
@@ -898,6 +989,12 @@ def revive(
 
     rebuild_registry(cfg.specs_path)
     feat_id_display = str(data.get("id", feature_id)).upper()
+    if data.get("_unchanged"):
+        # FEAT-015: already in the target state — say so rather than implying a
+        # revival happened. Reviving something that was never abandoned is a
+        # no-op, not an error.
+        console.print(f"[green]✓[/green] [bold]{feat_id_display}[/bold] is already [bold]idea[/bold]")
+        raise typer.Exit(0)
     console.print(f"[green]✓[/green] [bold]{feat_id_display}[/bold] revived → [bold]idea[/bold]")
 
     if data.get("abandoned_reason"):
@@ -915,12 +1012,32 @@ def revive(
 # --------------------------------------------------------------------------- #
 
 @app.command()
-def guide():
+def guide(
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of a report",
+    ),
+):
     """Show what's set up in this project and what to do next."""
     from meridian.guide import first_action, run_guide
 
     cfg = _config()
     steps = run_guide(cfg)
+
+    if as_json:
+        _emit_json({
+            "project": cfg.project,
+            "steps": [
+                {
+                    "number": s.number,
+                    "title": s.title,
+                    "status": s.status,
+                    "detail": s.detail,
+                    "next_action": s.next_action,
+                }
+                for s in steps
+            ],
+            "next_action": first_action(steps),
+        })
 
     STATUS_ICON = {"ok": "[green]✅[/green]", "warn": "[yellow]⚠️ [/yellow]", "error": "[red]❌[/red]"}
     STATUS_LABEL = {"ok": "green", "warn": "yellow", "error": "red"}
@@ -1116,9 +1233,21 @@ def register(
 
 
 @app.command()
-def projects():
+def projects(
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of a table",
+    ),
+):
     """List every tracked project."""
     entries = _tracked_projects()
+    if as_json:
+        _emit_json({
+            "projects": [
+                {"slug": e.slug, "path": str(e.path), "purpose": e.purpose,
+                 "exists": e.exists}
+                for e in entries
+            ]
+        })
     if not entries:
         console.print(
             "[dim]No projects tracked. Run [bold]meridian register[/bold] in each repo.[/dim]"
@@ -1565,3 +1694,68 @@ def help_cmd():
     console.print("  [dim]Skills run in Claude Code as[/dim] [cyan]/meridian:spec[/cyan][dim], "
                   "[/dim][cyan]/meridian:tasks[/cyan][dim], …[/dim]")
     console.print()
+
+
+# --------------------------------------------------------------------------- #
+# entry point  — the only place an unexpected exception should surface
+# --------------------------------------------------------------------------- #
+
+def main() -> None:
+    """Console-script entry point with a single top-level error handler.
+
+    FEAT-015: four ordinary conditions — a corrupt .meridian.toml, an unreadable
+    spec, a dead URL, an unpulled model — reached the user as ~40 lines of Rich
+    traceback. For a CLI that is mostly driven by an agent, a traceback is far
+    harder to recover from than one line naming the problem, and it costs a
+    great deal more context to read.
+
+    Typer's own exits pass straight through; anything unexpected becomes a
+    one-line error. Set MERIDIAN_DEBUG=1 to get the traceback back.
+    """
+    try:
+        app()
+    except (typer.Exit, typer.Abort, SystemExit):
+        raise
+    except KeyboardInterrupt:
+        console.print("\n[dim]Interrupted.[/dim]")
+        raise SystemExit(130)
+    except Exception as e:
+        if os.environ.get("MERIDIAN_DEBUG"):
+            raise
+        console.print(f"[red]Error:[/red] {_friendly(e)}")
+        console.print(
+            "  [dim]Set [bold]MERIDIAN_DEBUG=1[/bold] for the full traceback.[/dim]"
+        )
+        raise SystemExit(1)
+
+
+def _friendly(e: BaseException) -> str:
+    """One line describing *e*, naming the file or URL wherever we know it."""
+    import tomllib
+
+    if isinstance(e, tomllib.TOMLDecodeError):
+        return f".meridian.toml is not valid TOML — {e}"
+    if isinstance(e, PermissionError):
+        return f"Permission denied: {e.filename or e}"
+    if isinstance(e, FileNotFoundError):
+        return f"File not found: {e.filename or e}"
+    if isinstance(e, IsADirectoryError):
+        return f"Expected a file but found a directory: {e.filename or e}"
+    if isinstance(e, OSError):
+        return f"{e.strerror or e}{f': {e.filename}' if e.filename else ''}"
+
+    import httpx
+
+    if isinstance(e, httpx.HTTPStatusError):
+        return (
+            f"{e.request.url} returned HTTP {e.response.status_code}"
+        )
+    if isinstance(e, httpx.ConnectError):
+        return f"Could not connect to {e.request.url if e.request else 'the server'}"
+    if isinstance(e, httpx.TimeoutException):
+        return f"Timed out reaching {e.request.url if e.request else 'the server'}"
+    if isinstance(e, httpx.HTTPError):
+        return f"Network error: {e}"
+
+    message = str(e).strip()
+    return message or f"{type(e).__name__} (no message)"
