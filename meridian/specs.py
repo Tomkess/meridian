@@ -392,6 +392,74 @@ def _cell(value: Any) -> str:
     return text.replace("|", "\\|").replace("\r", " ").replace("\n", " ").strip()
 
 
+ADR_NUMBER = re.compile(r"^(\d+)")
+ADR_HEADING = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+ADR_TITLE_PREFIX = re.compile(r"^\d+\s*[—–-]\s*")
+ADR_STATUS_LINE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _decision_entry(path: Path) -> dict[str, str]:
+    """Index one ADR for REGISTRY.md: number, title, status, link.
+
+    Two shapes exist in the wild and both must read. The early ADRs carry YAML
+    frontmatter (``status: accepted``); the ones `/decision` writes carry none
+    and put the state in a ``**Status:** Accepted`` line. The ``# NNN — Title``
+    heading is the only thing every ADR has, so it is the primary title source,
+    with frontmatter ``title`` and the filename stem behind it.
+
+    A malformed ADR is never fatal. FEAT-013 showed the failure shape with a
+    goal file: the rebuild runs *after* a spec has been written to disk, so
+    raising here leaves the registry stale and the user with a traceback. An
+    unreadable ADR becomes a row marked ``unparseable`` — visible and
+    actionable, rather than silently dropped.
+    """
+    number = m.group(1) if (m := ADR_NUMBER.match(path.stem)) else ""
+    stem_title = re.sub(r"^\d+[-_\s]*", "", path.stem).replace("-", " ").replace("_", " ").strip()
+    fallback_title = stem_title or path.stem
+
+    try:
+        post = frontmatter.load(str(path))
+    except Exception as e:
+        # B4 / FEAT-013: warn and keep going — one bad ADR must not stop the rebuild
+        print(
+            f"[meridian] Warning: could not load decisions/{path.name}: {e}",
+            file=sys.stderr,
+        )
+        return {
+            "number": number or "—",
+            "title": fallback_title,
+            "status": "unparseable",
+            "file": path.name,
+        }
+
+    meta = post.metadata
+    if not number:
+        adr_id = str(meta.get("id", ""))
+        number = m.group(1) if (m := re.search(r"(\d+)", adr_id)) else "—"
+
+    heading = h.group(1) if (h := ADR_HEADING.search(post.content)) else ""
+    title = ADR_TITLE_PREFIX.sub("", heading) or str(meta.get("title") or "") or fallback_title
+
+    status_line = s.group(1) if (s := ADR_STATUS_LINE.search(post.content)) else ""
+    # Lower-cased so the column is scannable: the two shapes disagree on case
+    # ("accepted" in frontmatter, "Accepted" in the `/decision` template), and a
+    # skill filtering for `superseded` should not have to guess which it is.
+    status = str(meta.get("status") or status_line or "—").lower()
+
+    return {"number": number, "title": title, "status": status, "file": path.name}
+
+
+def scan_decisions(decisions_dir: Path) -> list[dict[str, str]]:
+    """Index every ADR in ``specs/decisions/``, sorted by filename.
+
+    A missing directory is normal — most projects have no ADRs — and yields an
+    empty list rather than an error.
+    """
+    if not decisions_dir.is_dir():
+        return []
+    return [_decision_entry(df) for df in sorted(decisions_dir.glob("*.md"))]
+
+
 def rebuild_registry(specs_dir: Path) -> None:
     specs = all_specs(specs_dir)
     specs.sort(key=lambda s: (STATUS_ORDER.get(s.get("status", "idea"), 99), s.get("id", "")))
@@ -406,6 +474,8 @@ def rebuild_registry(specs_dir: Path) -> None:
                 "name": gp.metadata.get("name", gf.stem),
                 "status": gp.metadata.get("status", "active"),
             })
+
+    decisions = scan_decisions(specs_dir / "decisions")
 
     lines = [
         "# Meridian Registry",
@@ -460,6 +530,28 @@ def rebuild_registry(specs_dir: Path) -> None:
 
     if not goals:
         lines.append("| — | — | — |")
+
+    # FEAT-021: ADRs last — features are the primary content of this file, and a
+    # skill reads it top to bottom. Without this section the decisions were
+    # write-only: `/spec` and `/breakdown` could not cite a decision already made.
+    lines += [
+        "",
+        "## Decisions",
+        "",
+        "| # | Title | Status | File |",
+        "|---|---|---|---|",
+    ]
+
+    for d in decisions:
+        link = f"[{d['file']}](decisions/{d['file']})"
+        lines.append(
+            "| " + " | ".join(_cell(v) for v in (
+                d["number"], d["title"], d["status"], link
+            )) + " |"
+        )
+
+    if not decisions:
+        lines.append("| — | — | — | — |")
 
     lines.append("")
     (specs_dir / "REGISTRY.md").write_text("\n".join(lines))
