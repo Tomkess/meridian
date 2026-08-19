@@ -2,11 +2,50 @@
 
 ## 0.5.0 — 2026-08-19
 
-- fix: resolve cwd in load_config so the project slug is never empty
-- fix: a malformed goal file no longer crashes rebuild_registry
-- refactor: extract skill distribution into meridian/skilldist.py (FEAT-020)
-- feat: stop committing the generated REGISTRY.md (FEAT-022)
-- feat: index architecture decision records in REGISTRY.md (FEAT-021)
+Clears the post-audit backlog. The riskiest code in the project — the part that
+writes to *other people's repositories* — is now testable and tested, and two
+latent data bugs found along the way are closed.
+
+### Added
+
+- **ADRs in `REGISTRY.md`** (FEAT-021). `specs/decisions/` was write-only: no
+  skill could see a decision already made, so decisions got silently
+  re-litigated. Both ADR shapes are read — the early ones carry YAML
+  frontmatter, the ones `/decision` writes carry a `**Status:**` line instead.
+- **`meridian guide` step 9 — Registry.** Reports the index as missing, or as
+  stale when a spec, goal, or decision is newer than it.
+
+### Changed
+
+- **`specs/REGISTRY.md` is no longer committed** (FEAT-022). Every row is derived
+  from files that *are* tracked, so committing it protected nothing while
+  conflicting on nearly every merge — and hand-resolving those conflicts had
+  silently dropped rows. Rejected `merge=ours`, which needs a per-clone git
+  config and, when forgotten, fails silently.
+- **Skill distribution extracted to `meridian/skilldist.py`** (FEAT-020).
+  `cli.py` 1,927 → 1,718 lines. The module returns data and imports neither
+  `typer` nor `rich`; `cli.py` keeps all rendering. That boundary is what makes
+  the git and GitHub paths testable — 27 new tests run against real temporary
+  git repositories rather than mocked subprocesses, including a direct check
+  that a PR run leaves the target repo's working tree and HEAD untouched.
+  `install` output was verified byte-identical before and after.
+
+### Fixed
+
+- **A malformed goal file no longer crashes `rebuild_registry`.** FEAT-013
+  closed this shape for specs and FEAT-021 closed it for decisions, but the
+  goals loop still called `frontmatter.load` unguarded. The rebuild runs *after*
+  a spec is written to disk, so one bad goal left the spec saved, the registry
+  stale, and a traceback on screen. The goal is now reported as `unparseable`
+  and indexing continues.
+- **`load_config` resolves its path.** A relative start made the config's parent
+  `Path(".")`, whose `.name` is `""`, collapsing the project slug to
+  `unknown-project`. That is FEAT-007's cross-project deletion re-entering
+  through a path gap: the LanceDB index is shared by every install, so all repos
+  loading a relative config wrote under one slug — and `meridian index` in any of
+  them would delete the others' research.
+
+655 tests (was 608), ruff and mypy clean.
 
 ## 0.4.0 — 2026-08-19
 
