@@ -1,4 +1,5 @@
 """Tests for meridian/guide.py — each project check, stale-blocked, first_action."""
+import os
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from meridian.guide import (
     _check_elaboration,
     _check_features,
     _check_goals,
+    _check_registry,
     _check_research,
     _check_steering,
     _check_tasks,
@@ -358,17 +360,66 @@ class TestFirstAction:
         assert first_action(steps) == "Fix error"
 
 
+# ── _check_registry ───────────────────────────────────────────────────────── #
+
+
+class TestCheckRegistry:
+    def test_missing_registry_is_warn(self, mock_cfg: MeridianConfig):
+        # The whole point of the check: REGISTRY.md is generated and no longer
+        # committed, so its absence in a fresh clone must be loud rather than
+        # leaving every skill silently reading no feature index.
+        result = _check_registry(mock_cfg.specs_path)
+        assert result.status == "warn"
+        assert result.next_action == "Run: meridian index"
+
+    def test_current_registry_is_ok(self, mock_cfg: MeridianConfig):
+        create_spec(mock_cfg.specs_path, "Some feature")
+        registry = mock_cfg.specs_path / "REGISTRY.md"
+        registry.write_text("# Registry\n")
+        assert _check_registry(mock_cfg.specs_path).status == "ok"
+
+    def test_registry_older_than_a_spec_is_stale(self, mock_cfg: MeridianConfig):
+        registry = mock_cfg.specs_path / "REGISTRY.md"
+        registry.write_text("# Registry\n")
+        spec_file = Path(create_spec(mock_cfg.specs_path, "Newer feature"))
+        _touch_after(spec_file, registry)
+        result = _check_registry(mock_cfg.specs_path)
+        assert result.status == "warn"
+        assert "stale" in result.detail
+
+    def test_registry_older_than_a_decision_is_stale(self, mock_cfg: MeridianConfig):
+        registry = mock_cfg.specs_path / "REGISTRY.md"
+        registry.write_text("# Registry\n")
+        decisions = mock_cfg.specs_path / "decisions"
+        decisions.mkdir(exist_ok=True)
+        adr = decisions / "001-some-decision.md"
+        adr.write_text("# Some decision\n")
+        _touch_after(adr, registry)
+        assert _check_registry(mock_cfg.specs_path).status == "warn"
+
+    def test_registry_with_no_sources_at_all_is_ok(self, mock_cfg: MeridianConfig):
+        # Nothing to be stale against — an empty project is not a warning.
+        (mock_cfg.specs_path / "REGISTRY.md").write_text("# Registry\n")
+        assert _check_registry(mock_cfg.specs_path).status == "ok"
+
+
+def _touch_after(newer: Path, older: Path) -> None:
+    """Force *newer* to have a later mtime than *older*, without sleeping."""
+    stamp = older.stat().st_mtime + 10
+    os.utime(newer, (stamp, stamp))
+
+
 # ── run_guide integration ────────────────────────────────────────────────── #
 
 
 class TestRunGuide:
-    def test_returns_eight_steps(self, mock_cfg: MeridianConfig):
+    def test_returns_nine_steps(self, mock_cfg: MeridianConfig):
         steps = run_guide(mock_cfg)
-        assert len(steps) == 8
+        assert len(steps) == 9
 
     def test_step_numbers_are_sequential(self, mock_cfg: MeridianConfig):
         steps = run_guide(mock_cfg)
-        assert [s.number for s in steps] == list(range(1, 9))
+        assert [s.number for s in steps] == list(range(1, 10))
 
     def test_all_statuses_are_valid(self, mock_cfg: MeridianConfig):
         steps = run_guide(mock_cfg)
