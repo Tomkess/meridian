@@ -15,6 +15,7 @@ meridian status --json                       # machine-readable — for skills a
 meridian register                            # track this repo in the cross-project dashboard
 meridian install --all                       # push skills into every tracked repo
 meridian install --all --pr                  # ...as a PR per repo (working trees untouched)
+meridian install --all --prune               # also remove skills Meridian no longer ships
 meridian projects                            # list every tracked project
 meridian status --all                        # cross-project dashboard
 meridian new "idea text" --appetite m        # quick-capture idea with appetite
@@ -142,7 +143,12 @@ one is built in a throwaway git worktree off `origin/HEAD`, so no tracked repo's
 tree or HEAD is touched — important when several of them have work in progress. Requires
 `gh` and an `origin` remote; repos without one are reported and skipped.
 
-Add `--dry-run` to either to see what would change.
+Sync is **additive** by default: a skill deleted from the package lingers in every
+repo until you pass `--prune`. That is opt-in because deleting files across ten repos
+is a bigger decision than updating them. `--prune` touches only
+`.claude/commands/meridian/`, never a project's own commands.
+
+Add `--dry-run` to any of these to see what would change.
 
 ## Machine-readable output
 

@@ -170,3 +170,72 @@ class TestPrMode:
 
         assert scratch.read_text() == "uncommitted work"
         assert not (a / ".claude").exists(), "PR mode must not write into the checkout"
+
+
+class TestPrune:
+    """FEAT-016: a skill deleted from the package must be able to leave repos.
+
+    Sync was additive, so the four skills cut in FEAT-014 were still sitting in
+    five repos after a full propagation — deleting one upstream changed nothing
+    anywhere.
+    """
+
+    def _stale_skill(self, repo: Path) -> Path:
+        dest = repo / ".claude" / "commands" / "meridian"
+        dest.mkdir(parents=True, exist_ok=True)
+        stale = dest / "connect-dots.md"
+        stale.write_text("a skill that no longer ships with Meridian\n")
+        return stale
+
+    def test_without_prune_a_removed_skill_lingers(self, tmp_path: Path, home: Path) -> None:
+        a = _make_repo(tmp_path, "alpha")
+        stale = self._stale_skill(a)
+        run(["register"], a, home)
+
+        run(["install", "--all"], a, home)
+
+        assert stale.exists(), "sync is additive by default — this is the documented behaviour"
+
+    def test_prune_removes_it(self, tmp_path: Path, home: Path) -> None:
+        a = _make_repo(tmp_path, "alpha")
+        stale = self._stale_skill(a)
+        run(["register"], a, home)
+
+        r = run(["install", "--all", "--prune"], a, home)
+
+        assert r.returncode == 0, r.stderr
+        assert not stale.exists()
+
+    def test_prune_keeps_the_real_skills(self, tmp_path: Path, home: Path) -> None:
+        a = _make_repo(tmp_path, "alpha")
+        self._stale_skill(a)
+        run(["register"], a, home)
+
+        run(["install", "--all", "--prune"], a, home)
+
+        installed = sorted(p.name for p in (a / ".claude/commands/meridian").glob("*.md"))
+        assert len(installed) == _skill_count()
+        assert "connect-dots.md" not in installed
+
+    def test_prune_dry_run_deletes_nothing(self, tmp_path: Path, home: Path) -> None:
+        a = _make_repo(tmp_path, "alpha")
+        stale = self._stale_skill(a)
+        run(["register"], a, home)
+
+        run(["install", "--all", "--prune", "--dry-run"], a, home)
+
+        assert stale.exists()
+
+    def test_prune_touches_only_the_meridian_command_dir(
+        self, tmp_path: Path, home: Path
+    ) -> None:
+        """It must never reach a repo's own Claude commands."""
+        a = _make_repo(tmp_path, "alpha")
+        self._stale_skill(a)
+        others = a / ".claude" / "commands"
+        (others / "their-own-command.md").write_text("belongs to the project\n")
+        run(["register"], a, home)
+
+        run(["install", "--all", "--prune"], a, home)
+
+        assert (others / "their-own-command.md").exists()
