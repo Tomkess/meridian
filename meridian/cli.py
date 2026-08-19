@@ -20,9 +20,11 @@ from meridian.specs import (
     APPETITE_VALUES,
     CONFIDENCE_VALUES,
     VALID_STATUSES,
+    AmbiguousFeatureError,
     all_specs,
     create_spec,
     edit_spec,
+    find_spec,
     load_spec,
     rebuild_registry,
     task_progress,
@@ -71,14 +73,21 @@ console = Console()
 
 def _find_spec(cfg, feature_id: str, *, silent: bool = False) -> Path | None:
     """Locate spec.md for a feature. Exits with error unless silent=True."""
-    feat_id_norm = feature_id.upper()
-    candidates = list(cfg.specs_path.glob(f"{feat_id_norm}_*/spec.md"))
-    if not candidates:
+    try:
+        found = find_spec(cfg.specs_path, feature_id)
+    except (ValueError, AmbiguousFeatureError) as e:
         if silent:
             return None
-        console.print(f"[red]Error:[/red] No spec found for [bold]{feat_id_norm}[/bold].")
+        console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
-    return candidates[0]
+    if found is None:
+        if silent:
+            return None
+        console.print(
+            f"[red]Error:[/red] No spec found for [bold]{feature_id.upper()}[/bold]."
+        )
+        raise typer.Exit(1)
+    return found
 
 STATUS_STYLE: dict[str, str] = {
     "idea":          "dim",

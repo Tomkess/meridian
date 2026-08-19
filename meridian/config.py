@@ -62,8 +62,18 @@ def load_config(cwd: Path | None = None) -> MeridianConfig:
     root = config_file.parent
     meridian_section = raw.get("meridian", {})
     specs_path = root / meridian_section.get("specs_path", "specs")
-    lancedb_raw = meridian_section.get("lancedb_path", "~/.meridian/lancedb")
-    lancedb_path = Path(lancedb_raw).expanduser()
+    # FEAT-018: default through meridian_home() so MERIDIAN_HOME redirects the
+    # vector store as well as the registry. It did not, so a test or sandbox
+    # following the documented safety instruction still read and wrote the
+    # developer's real LanceDB — the likely mechanism behind the destruction of
+    # the global store on 2026-08-18.
+    from meridian.home import meridian_home
+
+    lancedb_raw = meridian_section.get("lancedb_path")
+    lancedb_path = (
+        Path(lancedb_raw).expanduser() if lancedb_raw
+        else meridian_home() / "lancedb"
+    )
 
     return MeridianConfig(
         specs_path=specs_path,
