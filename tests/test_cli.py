@@ -388,11 +388,23 @@ class TestRevive:
         r = run(["revive", "feat-001"], proj_with_inprogress)
         assert "scope creep" in (r.stdout + r.stderr)
 
-    def test_revive_non_abandoned_exits_nonzero(
+    def test_revive_of_an_idea_is_a_no_op_success(
         self, proj_with_idea: Path
     ) -> None:
+        """FEAT-015: the target state already holds, so this is not an error.
+
+        An automation loop must be able to re-run a command safely; previously
+        this exited 1 and a retry could never succeed.
+        """
         r = run(["revive", "feat-001"], proj_with_idea)
+        assert r.returncode == 0
+        assert "already" in r.stdout
+
+    def test_revive_of_a_draft_still_fails(self, proj_with_draft: Path) -> None:
+        """Idempotency must not become "any transition is allowed"."""
+        r = run(["revive", "feat-001"], proj_with_draft)
         assert r.returncode != 0
+        assert "Cannot transition" in r.stdout
 
     def test_revive_clears_abandoned_at(self, proj_with_inprogress: Path) -> None:
         run(

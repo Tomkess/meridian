@@ -11,6 +11,7 @@ idea → spec → tasks → build → production. It is designed to be installed
 
 ```bash
 meridian status                              # full dashboard (task progress, deps, confidence)
+meridian status --json                       # machine-readable — for skills and scripts
 meridian register                            # track this repo in the cross-project dashboard
 meridian install --all                       # push skills into every tracked repo
 meridian install --all --pr                  # ...as a PR per repo (working trees untouched)
@@ -142,6 +143,22 @@ tree or HEAD is touched — important when several of them have work in progress
 `gh` and an `origin` remote; repos without one are reported and skipped.
 
 Add `--dry-run` to either to see what would change.
+
+## Machine-readable output
+
+`status`, `status --all`, `projects`, `guide` and `search` take `--json`. Skills and
+scripts should use it: it emits compact JSON to stdout with no Rich decoration, so an
+agent branches on data instead of parsing a table out of its own context.
+
+Measured on this repo's dashboard: table 5,912 bytes, compact JSON 4,247. Pipe through
+`python -m json.tool` when a human needs to read it.
+
+Any unexpected exception is rendered as a one-line error rather than a traceback.
+`MERIDIAN_DEBUG=1` restores the traceback.
+
+Lifecycle commands are idempotent: transitioning to the status a feature is already in
+succeeds, applies any flags given, and prints `already <status>`. Illegal transitions
+still fail. An automation loop can retry safely.
 
 ## Specs structure
 

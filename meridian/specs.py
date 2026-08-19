@@ -266,6 +266,13 @@ def transition_spec(
     abandoned_reason, confidence) that are applied before the single write,
     avoiding the double-save anti-pattern (B3).
 
+    Transitioning to the status a feature is already in is a **no-op success**
+    (FEAT-015), not an error: any `extra` fields are still applied, and the
+    caller can tell the difference via the returned ``_unchanged`` flag. An
+    automation loop must be able to re-run a command safely — previously a
+    retry after a partial failure hit "Cannot transition 'done' → 'done'" and
+    stuck permanently.
+
     The whole read-modify-write runs under ``spec_lock`` so concurrent
     transitions of the same feature serialize instead of racing (FEAT-004).
     """
@@ -275,6 +282,13 @@ def transition_spec(
     with spec_lock(spec_path):
         data = load_spec(spec_path)
         current = data.get("status", "idea")
+
+        if current == new_status:
+            if extra:
+                data.update(extra)
+                save_spec(spec_path, data)
+            data["_unchanged"] = True
+            return data
 
         allowed = VALID_TRANSITIONS.get(current, ())
         if new_status not in allowed:
