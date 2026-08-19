@@ -23,9 +23,9 @@ from meridian.specs import (
     VALID_STATUSES,
     all_specs,
     create_spec,
+    edit_spec,
     load_spec,
     rebuild_registry,
-    save_spec,
     task_progress,
     transition_spec,
 )
@@ -183,6 +183,22 @@ _STATUS_COLUMNS = (
 )
 
 
+def _tracked_projects():
+    """Read the registry, turning an unreadable one into a clear error.
+
+    FEAT-013: a corrupt registry used to read as "no projects tracked", which
+    then invited the user to run `register` — the very command that would
+    overwrite it. Now it stops, names the file, and points at the backup.
+    """
+    from meridian.registry import RegistryUnreadableError, all_projects
+
+    try:
+        return all_projects()
+    except RegistryUnreadableError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
 def _project_summary(specs_path: Path) -> dict[str, int]:
     """Count features by status for one project."""
     counts: dict[str, int] = {}
@@ -200,9 +216,7 @@ def _status_all() -> None:
     projects. Reads each tracked repo's specs directly — no repo needs to be
     checked out or current.
     """
-    from meridian.registry import all_projects
-
-    entries = all_projects()
+    entries = _tracked_projects()
     if not entries:
         console.print(
             "[dim]No projects tracked. Run [bold]meridian register[/bold] in each repo.[/dim]"
@@ -576,10 +590,8 @@ def cycle(
     feat_id_norm = feature_id.upper()
     spec_path = _find_spec(cfg, feature_id)
     assert spec_path is not None  # _find_spec exits when silent=False
-    data = load_spec(spec_path)
-
     if not clear and not set_cycle:
-        current = data.get("cycle") or "none"
+        current = load_spec(spec_path).get("cycle") or "none"
         console.print(f"  [bold]{feat_id_norm}[/bold] cycle: [blue]{current}[/blue]")
         return
 
@@ -591,8 +603,10 @@ def cycle(
             "expected e.g. [bold]2026-Q2[/bold]. Any string is accepted but check for typos.[/dim]"
         )
 
-    data["cycle"] = None if clear else set_cycle
-    save_spec(spec_path, data)
+    # FEAT-013: locked read-modify-write — an unlocked load/save here raced with
+    # `close` and destroyed whole specs.
+    with edit_spec(spec_path) as data:
+        data["cycle"] = None if clear else set_cycle
     rebuild_registry(cfg.specs_path)
 
     if clear:
@@ -896,9 +910,9 @@ def link_job(
     if task_keys:
         scheduler["task_keys"] = task_keys
 
-    data = load_spec(spec_path)
-    data["scheduler"] = scheduler
-    save_spec(spec_path, data)
+    # FEAT-013: locked read-modify-write.
+    with edit_spec(spec_path) as data:
+        data["scheduler"] = scheduler
     rebuild_registry(cfg.specs_path)
 
     feat_id_str = str(data.get("id", feature_id)).upper()
@@ -917,16 +931,16 @@ def unlink_job(
     cfg = _config()
     spec_path = _find_spec(cfg, feature_id)
     assert spec_path is not None  # _find_spec exits when silent=False
-    data = load_spec(spec_path)
-
-    if not data.get("scheduler"):
+    if not load_spec(spec_path).get("scheduler"):
         console.print(f"[dim]{feature_id.upper()} has no job linked.[/dim]")
         raise typer.Exit(0)
 
-    old = data["scheduler"]
-    old_name = old.get("job_name", str(old.get("job_id", "?"))) if isinstance(old, dict) else str(old)
-    data["scheduler"] = None
-    save_spec(spec_path, data)
+    # FEAT-013: locked read-modify-write. Re-read inside the lock so the value
+    # reported is the one actually cleared, not one observed before waiting.
+    with edit_spec(spec_path) as data:
+        old = data.get("scheduler") or {}
+        old_name = old.get("job_name", str(old.get("job_id", "?"))) if isinstance(old, dict) else str(old)
+        data["scheduler"] = None
     rebuild_registry(cfg.specs_path)
 
     feat_id_str = str(data.get("id", feature_id)).upper()
@@ -967,8 +981,15 @@ def index(
                     "lost; --vectors-only leaves their REGISTRY.md untouched)[/dim]."
                 )
         except RuntimeError as e:
-            console.print(f"[yellow]Warning:[/yellow] {e}")
-            console.print("Vector index was not rebuilt.")
+            # FEAT-013: this used to print a reassuring message and exit 0 while
+            # the corpus had already been deleted. Embedding now happens before
+            # any delete, so the existing rows really are intact — and the exit
+            # code says something failed, so a wrapper or agent can see it.
+            console.print(f"[red]Error:[/red] {e}")
+            console.print(
+                "  [dim]Index unchanged — existing chunks were left in place.[/dim]"
+            )
+            raise typer.Exit(1)
 
 
 # --------------------------------------------------------------------------- #
@@ -1230,14 +1251,20 @@ def register(
     ),
 ):
     """Track this repo in the global project registry."""
-    from meridian.registry import derive_purpose
+    from meridian.registry import RegistryUnreadableError, derive_purpose
     from meridian.registry import register as register_entry
 
     cfg = _config()
     slug = (name or cfg.project).strip().lower()
     text = purpose or derive_purpose(cfg.specs_path, cfg.root.name)
 
-    entry = register_entry(slug, cfg.root, text)
+    try:
+        entry = register_entry(slug, cfg.root, text)
+    except RegistryUnreadableError as e:
+        # Refusing is the point: writing here is what used to delete every
+        # other project.
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
     console.print(f"[green]✓[/green] Tracking [bold]{entry.slug}[/bold] → [dim]{entry.path}[/dim]")
     if entry.purpose:
         console.print(f"  {entry.purpose}")
@@ -1247,9 +1274,7 @@ def register(
 @app.command()
 def projects():
     """List every tracked project."""
-    from meridian.registry import all_projects
-
-    entries = all_projects()
+    entries = _tracked_projects()
     if not entries:
         console.print(
             "[dim]No projects tracked. Run [bold]meridian register[/bold] in each repo.[/dim]"
@@ -1460,9 +1485,7 @@ def _open_skill_pr(entry, version: str, *, dry_run: bool) -> tuple[str, str]:
 def _install_prs_to_all(*, dry_run: bool) -> None:
     """Open a skill-update PR in every tracked project (FEAT-010)."""
     from meridian import __version__
-    from meridian.registry import all_projects
-
-    entries = all_projects()
+    entries = _tracked_projects()
     if not entries:
         console.print(
             "[dim]No projects tracked. Run [bold]meridian register[/bold] in each repo.[/dim]"
@@ -1507,9 +1530,7 @@ def _install_to_all(*, force: bool, dry_run: bool) -> None:
     brings every repo's committed skills up to date instead of ten manual
     `--project` runs.
     """
-    from meridian.registry import all_projects
-
-    entries = all_projects()
+    entries = _tracked_projects()
     if not entries:
         console.print(
             "[dim]No projects tracked. Run [bold]meridian register[/bold] in each repo.[/dim]"

@@ -18,6 +18,10 @@ dependencies = [
     # lancedb: pin to a tested range — its internal query API changes between minor versions
     "lancedb>=0.10,<0.20",
     "pyarrow>=14",
+    # FEAT-013: correct TOML serialisation for the project registry. Hand-rolled
+    # escaping missed control characters, and one newline made the file
+    # unparseable — after which the next write silently deleted every project.
+    "tomli-w>=1.0",
 ]
 
 [project.optional-dependencies]

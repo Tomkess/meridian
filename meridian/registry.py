@@ -12,13 +12,26 @@ mode this feature exists to prevent.
 from __future__ import annotations
 
 import logging
+import shutil
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+import tomli_w
+
 from meridian.home import registry_file
 
 logger = logging.getLogger(__name__)
+
+
+class RegistryUnreadableError(RuntimeError):
+    """`projects.toml` exists but cannot be parsed.
+
+    FEAT-013: this used to be swallowed — `all_projects()` returned an empty
+    list, and the next `register` rewrote the file from that empty list,
+    permanently deleting every other project. Callers must now see the
+    difference between "no projects" and "cannot read the projects".
+    """
 
 
 @dataclass
@@ -29,17 +42,12 @@ class ProjectEntry:
     exists: bool
 
 
-def _quote(value: str) -> str:
-    """Minimal TOML basic-string escaping for values we write."""
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
 def all_projects() -> list[ProjectEntry]:
     """Every registered project, sorted by slug.
 
-    A missing or unreadable registry yields an empty list rather than raising:
-    `meridian inbox` should still list captures on a machine where nothing has
-    been registered yet.
+    A *missing* registry is an empty list — nothing has been registered yet.
+    An *unreadable* one raises: silently treating a corrupt file as empty is
+    what allowed a single stray byte to wipe the registry on the next write.
     """
     path = registry_file()
     if not path.exists():
@@ -48,8 +56,12 @@ def all_projects() -> list[ProjectEntry]:
         with open(path, "rb") as f:
             raw = tomllib.load(f)
     except (tomllib.TOMLDecodeError, OSError) as e:
-        logger.warning("Could not read project registry at %s (%s)", path, e)
-        return []
+        backup = path.with_suffix(path.suffix + ".bak")
+        hint = f" A previous copy may exist at {backup}." if backup.exists() else ""
+        raise RegistryUnreadableError(
+            f"The project registry at {path} could not be read ({e}). "
+            f"Fix or remove the file — Meridian will not overwrite it.{hint}"
+        ) from e
 
     entries = []
     for item in raw.get("project", []):
@@ -91,23 +103,47 @@ def register(slug: str, path: Path, purpose: str = "") -> ProjectEntry:
     return entries[slug]
 
 
+_HEADER = (
+    "# Meridian project registry — add a repo with `meridian register`\n"
+    "# (`meridian init` registers automatically). Read by `meridian status --all`\n"
+    "# and `meridian install --all`. Safe to edit by hand.\n\n"
+)
+
+
 def _write(entries: list[ProjectEntry]) -> None:
-    lines = [
-        "# Meridian project registry — add a repo with `meridian register`",
-        "# (`meridian init` registers automatically). Read by `meridian status --all`",
-        "# and `meridian install --all`. Safe to edit by hand.",
-        "",
-    ]
-    for e in entries:
-        lines.append("[[project]]")
-        lines.append(f'slug    = "{_quote(e.slug)}"')
-        lines.append(f'path    = "{_quote(str(e.path))}"')
-        lines.append(f'purpose = "{_quote(e.purpose)}"')
-        lines.append("")
+    """Serialise the registry, keeping a backup of what was there.
+
+    Uses a real TOML writer: the previous hand-rolled escaping did not handle
+    control characters, so a newline in `--purpose` produced a file that could
+    never be read again.
+    """
+    document = {
+        "project": [
+            {"slug": e.slug, "path": str(e.path), "purpose": e.purpose}
+            for e in entries
+        ]
+    }
 
     path = registry_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines))
+
+    # Keep the previous good copy — the registry is the one piece of Meridian
+    # state that is not reconstructible from any repo.
+    if path.exists():
+        try:
+            shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+        except OSError as e:  # pragma: no cover - best effort
+            logger.warning("Could not back up the project registry (%s)", e)
+
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(_HEADER.encode())
+            tomli_w.dump(document, f)
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # Headings that name the document rather than describe the project. Matching one

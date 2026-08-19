@@ -67,3 +67,27 @@ def test_bundled_and_inrepo_are_structurally_consistent(skill_path: Path) -> Non
         f"its .claude/commands/meridian copy:\n"
         + report.render("bundled", ".claude/commands/meridian")
     )
+
+
+@pytest.mark.parametrize(
+    "skill_path",
+    _bundled_skills(),
+    ids=lambda p: p.name,
+)
+def test_bundled_and_inrepo_are_byte_identical(skill_path: Path) -> None:
+    """FEAT-013: the specs claim byte-identity; the structural check does not give it.
+
+    `compare_texts` fingerprints headings and frontmatter keys only, so a body
+    rewrite — replacing a CLI invocation, inverting a rule — passes while the
+    two copies say different things. FEAT-007 AC20 and FEAT-006 both assert the
+    pair is byte-identical, so test that directly.
+    """
+    counterpart = INREPO / skill_path.name
+    assert counterpart.exists(), (
+        f"{skill_path.name} ships in the package but has no "
+        f".claude/commands/meridian copy — run `meridian install --project`."
+    )
+    assert skill_path.read_bytes() == counterpart.read_bytes(), (
+        f"{skill_path.name} differs between the bundled skill and its dogfooded "
+        f"copy. They must be identical: run `meridian install --project --force`."
+    )
