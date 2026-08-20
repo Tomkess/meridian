@@ -17,7 +17,9 @@ meridian install --all                       # push skills into every tracked re
 meridian install --all --pr                  # ...as a PR per repo (working trees untouched)
 meridian install --all --prune               # also remove skills Meridian no longer ships
 meridian projects                            # list every tracked project
-meridian status --all                        # cross-project dashboard
+meridian status --all                        # cross-project dashboard (+ staleness, capacity)
+meridian next                                # what to work on next, ranked across all projects
+meridian next --limit 10 --project <slug>    # bound the list / narrow to one repo
 meridian new "idea text" --appetite m        # quick-capture idea with appetite
 meridian new "idea" --goal goal-01           # capture linked to a goal
 meridian close <feat-id> --status <s>        # lifecycle transition
@@ -132,6 +134,24 @@ answers the question the per-repo dashboard cannot: what is in flight everywhere
 
 A tracked path that no longer resolves is reported and skipped, never deleted — a repo
 may just be on another disk.
+
+### What to work on next
+
+`meridian status --all` tallies. `meridian next` ranks: **blocked longest first, then
+in-progress nearest completion, then in-progress that has stalled, then draft, then
+idea.** Done, shipped and abandoned features never rank — they are outcomes, not options.
+
+Every row states the signal that put it there ("12 of 15 tasks done", "nothing changed
+in 79 days"), because an opaque score would be worse than the tally it replaces. `--json`
+carries those raw signals so a skill can re-rank without re-deriving them.
+
+Staleness comes from `spec.md` and `tasks.md` **mtimes, not git** — a fresh clone or a
+branch switch resets them, so a dormant repo can look new. The commands say so on every
+run rather than hiding it.
+
+Cycle capacity is summed **across** projects: Shape Up's "at most two large bets" is
+meaningless per repo when you have ten of them. Features with no cycle are reported as
+uncommitted, never folded into zero.
 
 ### Propagating skills
 
