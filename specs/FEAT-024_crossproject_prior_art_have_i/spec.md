@@ -81,6 +81,13 @@ stale paths.
 - **AC4** — Prior-art hits are omitted entirely when the query has no foreign
   match above the same relevance bar applied locally. An empty section is
   printed as "no prior art found", not as silence.
+  *As built:* "the same relevance bar applied locally" is the score of the
+  **weakest local hit that was shown** — a foreign row earns its place only by
+  being at least that relevant. There is no absolute threshold to lean on; the
+  distances mean something only relative to this query and this embedding
+  space. When there are no local hits there is no bar, and every candidate is
+  admitted (still capped and limited): a repo with no research of its own has
+  nothing to calibrate against, and is exactly when prior art is worth most.
 
 ### Attribution
 
@@ -149,3 +156,49 @@ stale paths.
 Against the real corpus: a query from `meridian` (2 chunks) must still surface
 its own hit first while returning prior art from `portfolio-management` (73
 chunks). That is the ordering property, tested on the shape that breaks it.
+
+### Result — 2026-08-20
+
+Read-only query against the real shared store (178 rows before and after;
+nothing was written), run as `meridian` against
+`portfolio-management` 73 · `misc` 52 · `gdc-mic-ai-evaluation` 43 ·
+`bet365-apify-scraper` 8 · `meridian` 2:
+
+> *"how should research be scoped across projects in a shared vector store?"*
+
+- **Merged ranking (the old `--all-projects`):** zero `meridian` rows in the top
+  5, and zero in the top **20**. The local repo's own research is not merely
+  outranked, it is invisible. This is the failure the separate sections exist to
+  prevent, confirmed on the real corpus rather than assumed.
+- **Two-pass:** both `meridian` chunks returned first and complete
+  (d = 1.128, 1.146), then a separate prior-art section of 5 hits across 3
+  projects — `misc` ×2, `gdc-mic-ai-evaluation` ×2, `portfolio-management` ×1 —
+  every one resolvable to an absolute feature directory that exists on disk. The
+  per-project cap is what left room for the third repo.
+- Bar for that query: `_distance ≤ 1.1463` (the weakest local hit). Every
+  foreign hit shown scored better than either local hit — which is precisely why
+  a merged ranking loses.
+
+**Gate:** 688 tests pass, `ruff check .` clean, `mypy meridian/` clean.
+
+**Guards:** `tests/test_prior_art.py` — 27 tests. AC12 is
+`TestUnevenCorpusOrdering`, which first asserts the *precondition* (a merged
+ranking drops the local row entirely on a 30-vs-1 corpus) so the ordering
+assertion cannot pass vacuously. AC13 is `TestDefaultPathIsNeverWidened`, at the
+CLI: a plain `meridian search` returns only this project's rows and never prints
+the prior-art section.
+
+**Deviation — the golden run.** Key Risks called AC10 "worth a golden run", and
+it did not get one. `/prior-art` is cross-project by definition and the golden
+fixture is a single project, so a run captured against it exercises only the
+empty case; capturing the branch that matters needs a second fixture project, a
+corpus enriched into both projects' rows, and a sandbox `projects.toml` — a
+`run_golden.sh` change rather than a capture, and out of appetite here. It is
+recorded as an argued exemption in `tests/golden/RUBRIC.md`, which carries the
+full scoring criteria including the AC10 must-have, so the gate is honest about
+the gap instead of implying coverage. Building that second fixture is the next
+thing to do before this skill's prompt is edited again.
+
+**Not done here.** `CLAUDE.md` and `README.md` still lack the `/prior-art` row
+and the new `--prior-art` / `--per-project` flags; both are shared files that
+parallel work was touching.

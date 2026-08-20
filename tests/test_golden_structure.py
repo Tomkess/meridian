@@ -389,7 +389,10 @@ BUNDLED_SKILLS = Path(__file__).parents[1] / "meridian" / "skills" / "commands"
 # A skill may go uncovered only with a reason recorded in the rubric.
 # `/brief` needs a real source document in research_assets/ to summarise;
 # inventing one would test the fixture rather than the skill.
-EXEMPT = {"brief"}
+# `/prior-art` is cross-project by definition and the golden fixture is a single
+# project, so a run against it can only ever capture the empty case. Both are
+# argued in RUBRIC.md, which carries their scoring criteria regardless.
+EXEMPT = {"brief", "prior-art"}
 
 
 def _skill_names() -> set[str]:
