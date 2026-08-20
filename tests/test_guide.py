@@ -69,6 +69,31 @@ class TestCheckSteering:
         (mock_cfg.specs_path / "STEERING.md").write_text(content)
         assert _check_steering(mock_cfg.specs_path).status == "ok"
 
+    def test_real_content_with_many_comments_is_ok(self, mock_cfg: MeridianConfig):
+        """Comments are not evidence of an unfilled template.
+
+        The old check warned on any file with 3+ HTML comments, which flagged
+        Meridian's own 3.4KB STEERING.md — a filled file keeps explanatory
+        comments, and the check was crying wolf about the thing it wants.
+        """
+        prose = "## Architecture Constraints\n" + "The vector store is global. " * 20
+        comments = "\n".join(f"<!-- note {i} -->" for i in range(6))
+        (mock_cfg.specs_path / "STEERING.md").write_text(f"{prose}\n{comments}\n")
+        assert _check_steering(mock_cfg.specs_path).status == "ok"
+
+    def test_comments_wrapped_around_nothing_is_warn(self, mock_cfg: MeridianConfig):
+        """The actual template: lots of guidance, no content."""
+        template = "# Project Steering\n\n" + "\n".join(
+            f"<!-- {'guidance text ' * 20} -->" for _ in range(5)
+        )
+        (mock_cfg.specs_path / "STEERING.md").write_text(template)
+        assert _check_steering(mock_cfg.specs_path).status == "warn"
+
+    def test_multiline_comment_is_stripped(self, mock_cfg: MeridianConfig):
+        block = "<!--\n" + ("filler line\n" * 40) + "-->"
+        (mock_cfg.specs_path / "STEERING.md").write_text(f"# Steering\n\n{block}\n")
+        assert _check_steering(mock_cfg.specs_path).status == "warn"
+
 
 # ── _check_goals ─────────────────────────────────────────────────────────── #
 
