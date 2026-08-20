@@ -2,8 +2,42 @@
 
 ## 0.6.1 — 2026-08-20
 
-- feat: drift detection that survives the merge (FEAT-027)
-- docs: write the v0.6.0 changelog section
+### Fixed
+
+- **`meridian drift` survives the merge** (FEAT-027). It compared a feature's
+  criteria against its branch's diff against `main`, and once the branch is
+  merged that diff is empty. But `close --status done` runs drift automatically,
+  and by then the branch is usually already merged — so the one moment the check
+  fired was the one moment it could say nothing, and it said it in a way that
+  reads like a clean bill of health rather than a failure to look. Found by using
+  it: all four of FEAT-023–026 reported "nothing to compare" straight after
+  merging, and the report looked fine.
+
+  `assess()` now falls back to the feature's commits in the base branch, found
+  three ways and unioned — a merge commit naming it, a commit whose message names
+  it (what a squash merge leaves), and commits touching its spec directory. A
+  merge is diffed against its **first** parent, so unrelated mainline work is not
+  counted as the feature's. Branch mode still wins when the branch holds the work.
+
+- **A sibling spec can no longer satisfy an acceptance criterion.** The fallback
+  above required this. A spec states its own criteria, so a spec in the haystack
+  lets every AC match its own text — which is why the original excluded the
+  feature under assessment. That was enough while a diff covered one feature; in
+  history mode a single commit that shapes or closes four features drags all four
+  specs in. Verified before fixing: FEAT-024's haystack held FEAT-023's, 025's and
+  026's spec text. `specs/FEAT-*` is now excluded wholesale, while `REGISTRY.md`,
+  `goals/` and `CYCLES.md` stay visible for an AC to name.
+
+- **An empty search reports as empty.** When neither a branch diff nor a matching
+  commit exists, the message names both searches that came back and states the
+  branch/commit convention, instead of printing something a reader takes for a
+  pass.
+
+Five of six new tests fail against the previous implementation; the sixth passes
+there for the wrong reason, so a seventh pins the exclusion by running one
+history through both exclusion sets.
+
+908 tests, ruff and mypy clean.
 
 ## 0.6.0 — 2026-08-20
 
