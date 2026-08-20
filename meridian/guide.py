@@ -6,6 +6,7 @@ and surfaces the most important next action in the correct order.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -16,6 +17,7 @@ from meridian.config import MeridianConfig
 from meridian.specs import CONFIDENCE_VALUES, all_specs, task_progress
 
 _STALE_BLOCKED_DAYS = 14  # flag features blocked longer than this
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 # ─── Result type ──────────────────────────────────────────── #
@@ -73,8 +75,12 @@ def _check_steering(specs_path: Path) -> StepResult:
         )
 
     content = steering_file.read_text().strip()
-    # Template is ~300 chars with only comments; real content is substantially longer
-    if len(content) < 200 or content.count("<!--") >= 3:
+    # Measure the prose, not the file. The shipped template is comments wrapped
+    # around nothing, but a filled STEERING.md legitimately keeps explanatory
+    # comments — counting them flagged this repo's own 3.4KB steering file as
+    # unfilled, which is the check crying wolf about the exact thing it wants.
+    body = _HTML_COMMENT.sub("", content).strip()
+    if len(body) < 200:
         return StepResult(
             2, "Steering", subtitle, "warn",
             "STEERING.md looks like an unfilled template.",
