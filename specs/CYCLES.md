@@ -5,11 +5,15 @@ Assign features to a cycle with: `meridian cycle <feat-id> --set <cycle>`
 
 ---
 
-## Current Cycle: —
+## Current Cycle: 2026-Q3
+
+Betting on goal-01 — make the two differentiators real.
 
 | ID | Name | Appetite | Goal | Owner |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| FEAT-023 | Incremental, deduplicated ingestion | m | goal-01 | — |
+| FEAT-024 | Cross-project prior art | s | goal-01 | — |
+| FEAT-026 | Portfolio view that ranks | m | goal-01 | — |
 
 ---
 
@@ -17,9 +21,9 @@ Assign features to a cycle with: `meridian cycle <feat-id> --set <cycle>`
 
 Features not bet on in the current cycle. Revisit at the next planning session.
 
-<!-- List feat IDs here, e.g.:
-feat-004, feat-007 — defer to next cycle
--->
+FEAT-025 — research with resolvable citations. Not bet: it depends on FEAT-023,
+and there is little worth citing until the corpus grows. Bet it next cycle,
+after ingestion has been used in anger.
 
 ---
 
