@@ -815,6 +815,82 @@ def _report_enrich(result: dict) -> None:
 # search
 # --------------------------------------------------------------------------- #
 
+def _search_row(r: dict, cfg, result_label) -> dict:
+    """One search hit as JSON. Prior-art fields ride along when present."""
+    row = {
+        "project": r.get("project"),
+        "feat_id": r.get("feat_id"),
+        "label": result_label(r, cfg),
+        "source_name": r.get("source_name"),
+        "chunk_idx": r.get("chunk_idx"),
+        "score": r.get("rerank_score", r.get("_distance")),
+        "text": r.get("text"),
+    }
+    if "resolvable" in r:
+        row.update({
+            "project_path": r.get("project_path"),
+            "feat_path": r.get("feat_path"),
+            "resolvable": r.get("resolvable"),
+            "unresolvable_reason": r.get("unresolvable_reason"),
+        })
+    return row
+
+
+def _print_hit(index: int, r: dict, name: str) -> None:
+    score = r.get("rerank_score", r.get("_distance"))
+    score_str = f"  [dim]score {score:.3f}[/dim]" if isinstance(score, float) else ""
+    console.print(
+        f"[bold]{index}.[/bold] [blue]{name}[/blue] "
+        f"[dim]{r['source_name']} ·chunk {r['chunk_idx']}[/dim]{score_str}"
+    )
+
+
+def _preview(r: dict) -> str:
+    return r.get("text", "")[:200].replace("\n", " ").strip()
+
+
+def _print_prior_art(hits: list[dict], result_label, cfg) -> None:
+    """The second, separately ranked section — visually its own thing.
+
+    Rendered as a list rather than a table on purpose. The absolute path is the
+    only field here that can be acted on, and a table is exactly where it would
+    be truncated: `_status_all` had to pin explicit widths because a `ratio`
+    column starves the fixed ones and `no_wrap` shrinks the row's identity
+    instead. A path with a `…` in the middle is worse than useless — it looks
+    copyable. Printed soft-wrapped so the terminal, not Rich, decides where a
+    long path breaks.
+    """
+    console.print()
+    console.rule(
+        "[bold magenta]Prior art[/bold magenta] [dim]— other projects[/dim]",
+        style="magenta", align="left",
+    )
+    console.print()
+
+    if not hits:
+        # AC4: an empty section says so. Silence reads as a broken feature.
+        console.print(
+            "  [dim]No prior art found — no other project has research at least as "
+            "relevant as this project's own hits.[/dim]\n"
+        )
+        return
+
+    for i, r in enumerate(hits, 1):
+        _print_hit(i, r, result_label(r, cfg))
+        if r.get("resolvable"):
+            console.print(f"   [green]↳[/green] [cyan]{r['feat_path']}[/cyan]", soft_wrap=True)
+        else:
+            where = r.get("project_path")
+            trail = f" [dim]({where})[/dim]" if where else ""
+            console.print(
+                f"   [yellow]⚠ unresolvable[/yellow] [dim]— {r.get('unresolvable_reason')}"
+                f"[/dim]{trail}",
+                soft_wrap=True,
+            )
+        console.print(f"   {_preview(r)}")
+        console.print()
+
+
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Natural language search query"),
@@ -823,15 +899,34 @@ def search(
     no_rerank: bool = typer.Option(False, "--no-rerank", help="Skip BGE reranker (faster)"),
     all_projects: bool = typer.Option(
         False, "--all-projects",
-        help="Search every Meridian project's research, not just this one",
+        help="Also show prior art: a separate section of other projects' research",
+    ),
+    prior_art: int = typer.Option(
+        5, "--prior-art",
+        help="Max prior-art hits (with --all-projects); 0 disables the section",
+    ),
+    per_project: int = typer.Option(
+        2, "--per-project",
+        help="Max prior-art hits from any single other project",
     ),
     as_json: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of a report",
     ),
 ):
-    """Semantic search across this project's enriched research."""
+    """Semantic search across this project's enriched research.
+
+    With --all-projects, other projects' research is returned as a separate
+    "Prior art" section — ranked on its own and never mixed into the local
+    hits, because the shared corpus is uneven enough that a merged ranking is
+    won by whichever repo has written the most.
+    """
     from meridian.enrich import LegacyIndexError
-    from meridian.search import _reranker_available, result_label, semantic_search
+    from meridian.search import (
+        _reranker_available,
+        result_label,
+        search_with_prior_art,
+        semantic_search,
+    )
     cfg = _config()
 
     rerank = not no_rerank
@@ -840,15 +935,32 @@ def search(
         rerank = False
         reranker_note = " [dim](no reranker — install sentence-transformers for better ranking)[/dim]"
 
+    # Resolved before searching so an unreadable registry is one clear error,
+    # not a page of hits all claiming their project is untracked.
+    entries = _tracked_projects() if all_projects and prior_art > 0 else []
+    prior_art_hits: list[dict] = []
+
     with console.status(f"Searching: [bold]{query}[/bold]…"):
         try:
-            results = semantic_search(
-                cfg, query,
-                feat_id_filter=feat.upper() if feat else None,
-                limit=limit,
-                rerank=rerank,
-                all_projects=all_projects,
-            )
+            if all_projects:
+                found = search_with_prior_art(
+                    cfg, query,
+                    feat_id_filter=feat.upper() if feat else None,
+                    limit=limit,
+                    prior_art_limit=prior_art,
+                    per_project=per_project,
+                    rerank=rerank,
+                    entries=entries,
+                )
+                results, prior_art_hits = found.local, found.prior_art
+            else:
+                # The default path is untouched: this project's rows only.
+                results = semantic_search(
+                    cfg, query,
+                    feat_id_filter=feat.upper() if feat else None,
+                    limit=limit,
+                    rerank=rerank,
+                )
         except LegacyIndexError as e:
             # Not a failure of this query — the index just predates per-project
             # scoping. Exit 0 with the remediation, so scripts and skills that
@@ -862,22 +974,14 @@ def search(
     if as_json:
         _emit_json({
             "query": query,
-            "project": None if all_projects else cfg.project,
-            "results": [
-                {
-                    "project": r.get("project"),
-                    "feat_id": r.get("feat_id"),
-                    "label": result_label(r, cfg),
-                    "source_name": r.get("source_name"),
-                    "chunk_idx": r.get("chunk_idx"),
-                    "score": r.get("rerank_score", r.get("_distance")),
-                    "text": r.get("text"),
-                }
-                for r in results
-            ],
+            "project": cfg.project,
+            "all_projects": all_projects,
+            "results": [_search_row(r, cfg, result_label) for r in results],
+            "prior_art_searched": bool(all_projects and prior_art > 0),
+            "prior_art": [_search_row(r, cfg, result_label) for r in prior_art_hits],
         })
 
-    if not results:
+    if not results and not prior_art_hits:
         scope_hint = (
             "" if all_projects
             else f" [dim]Searching [bold]{cfg.project}[/bold] only — add --all-projects to widen.[/dim]"
@@ -888,19 +992,18 @@ def search(
         )
         raise typer.Exit(0)
 
-    scope_note = " [dim](all projects)[/dim]" if all_projects else ""
+    scope_note = f" [dim](this project: {cfg.project})[/dim]" if all_projects else ""
     console.print(f'\n[bold]Results for[/bold] "{query}"{scope_note}{reranker_note}\n')
-    for i, r in enumerate(results, 1):
-        score = r.get("rerank_score", r.get("_distance"))
-        score_str = f"  [dim]score {score:.3f}[/dim]" if isinstance(score, float) else ""
-        preview = r["text"][:200].replace("\n", " ").strip()
-        name = result_label(r, cfg)
-        console.print(
-            f"[bold]{i}.[/bold] [blue]{name}[/blue] "
-            f"[dim]{r['source_name']} ·chunk {r['chunk_idx']}[/dim]{score_str}"
-        )
-        console.print(f"   {preview}")
-        console.print()
+    if results:
+        for i, r in enumerate(results, 1):
+            _print_hit(i, r, result_label(r, cfg))
+            console.print(f"   {_preview(r)}")
+            console.print()
+    else:
+        console.print(f"  [dim]Nothing in {cfg.project}'s own research.[/dim]\n")
+
+    if all_projects and prior_art > 0:
+        _print_prior_art(prior_art_hits, result_label, cfg)
 
 
 

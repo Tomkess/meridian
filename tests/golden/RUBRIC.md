@@ -187,6 +187,37 @@ from research forever after.
 | S1 | Consequences include at least one negative — an ADR with no downside is not a decision | |
 | S2 | Context names the feature IDs or area affected | |
 
+### `/prior-art` — rubric only, no captured run
+
+`/prior-art` answers "have I solved this before, in another repo?". It is cross-project
+by definition, and the golden fixture is a single project sharing nothing with anything,
+so a run captured against it can only ever exercise the empty case — the one branch that
+already has a unit test (`tests/test_prior_art.py::test_empty_prior_art_is_stated_not_silent`).
+Capturing the branch that matters needs three things the harness does not have: a second
+fixture project committed under `tests/golden/`, a corpus enriched into *both* projects'
+rows in one sandbox store, and a `projects.toml` in the sandbox `MERIDIAN_HOME` mapping the
+second slug to its path so `feat_path` resolves. That is a `run_golden.sh` change, not a
+capture, and it is the right next step before this skill's prompt is edited again.
+
+Must-have 3 is the one to watch. It is a prompt-level guard on the failure this skill makes
+possible — a conclusion reached in another repo, under another repo's constraints, quietly
+adopted here as settled. Nothing downstream catches it: the answer reads exactly like a
+correct one.
+
+| # | Must-have | Score |
+|---|---|---|
+| 1 | Local research and prior art are reported as separate sections, never merged | |
+| 2 | Every prior-art claim names its project in the same sentence (`portfolio-management` concluded X) | |
+| 3 | No foreign conclusion is stated as this project's own — no "we decided", no bare "the research shows" | |
+| 4 | Each resolvable hit gives the absolute `feat_path` to read | |
+| 5 | An unresolvable hit is still reported, with its reason, not dropped | |
+| 6 | Empty prior art is stated plainly, not left as silence | |
+
+| # | Should-have | Score |
+|---|---|---|
+| S1 | Says what does *not* transfer — the other repo's differing scale, stack or constraints | |
+| S2 | A foreign `FEAT-NNN` is labelled `<project>/FEAT-NNN`, never resolved against local specs | |
+
 ### `/brief` — rubric only, no captured run
 
 `/brief` summarises a source document into `summaries/`. It has scoring criteria
