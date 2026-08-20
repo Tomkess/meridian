@@ -1351,6 +1351,120 @@ def search(
         _print_prior_art(prior_art_hits, result_label, cfg)
 
 
+# --------------------------------------------------------------------------- #
+# cite
+# --------------------------------------------------------------------------- #
+
+@app.command()
+def cite(
+    citation: str = typer.Argument(
+        ..., help="A citation: project:FEAT-NNN:source_name#chunk_idx",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of a report",
+    ),
+):
+    """Resolve a citation to the exact chunk of research it names.
+
+    FEAT-025: a citation is only worth writing if a reader can check it. This
+    is the checker — for a citation in a brief, a spec, a commit message, or a
+    conversation six months from now.
+
+    Exits non-zero when the citation does not resolve. That is the point: a
+    citation pointing at a chunk that is gone means the evidence moved, and
+    everything resting on it is unverified.
+    """
+    import json
+
+    from meridian.citations import (
+        CitationError,
+        CitationFormatError,
+        CitationMissingError,
+        CitationProjectError,
+        parse_citation,
+        resolve_citation,
+    )
+    from meridian.enrich import LegacyIndexError
+
+    cfg = _config()
+
+    def _fail(kind: str, message: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"citation": citation, "resolved": False, "error": kind,
+                 "message": message},
+                separators=(",", ":"), default=str,
+            ))
+        else:
+            console.print(f"[red]Error:[/red] {message}")
+        raise typer.Exit(1)
+
+    try:
+        parsed = parse_citation(citation)
+        resolved = resolve_citation(parsed, cfg)
+    except CitationFormatError as e:
+        _fail("format", str(e))
+        return
+    except CitationProjectError as e:
+        _fail("project_unreachable", str(e))
+        return
+    except CitationMissingError as e:
+        _fail("chunk_missing", str(e))
+        return
+    except LegacyIndexError as e:
+        # The index predates per-project scoping, so nothing can be resolved
+        # until it is rebuilt. Still an unresolved citation — exit non-zero.
+        _fail("legacy_index", str(e))
+        return
+    except CitationError as e:  # pragma: no cover - defensive
+        _fail("unresolved", str(e))
+        return
+
+    source = resolved.source_path
+    if as_json:
+        _emit_json({
+            "citation": str(resolved.citation),
+            "resolved": True,
+            "project": resolved.citation.project,
+            "feat_id": resolved.citation.feat_id,
+            "source_name": resolved.citation.source_name,
+            "chunk_idx": resolved.citation.chunk_idx,
+            "source_path": str(source) if source else None,
+            "source_exists": resolved.source_exists,
+            "text": resolved.text,
+        })
+
+    if parsed.project == cfg.project:
+        from meridian.specs import feat_display_name
+        label = feat_display_name(cfg.specs_path, parsed.feat_id)
+    else:
+        # Never resolve a foreign feat_id against the local specs directory —
+        # FEAT-001 exists in several repos and would borrow the wrong name.
+        label = f"{parsed.project}/{parsed.feat_id}"
+
+    console.print(f"\n[bold]{resolved.citation}[/bold]")
+    console.print(
+        f"[blue]{label}[/blue] "
+        f"[dim]{parsed.source_name} · chunk {parsed.chunk_idx}[/dim]"
+    )
+    if source is None:
+        console.print(
+            "[yellow]⚠[/yellow]  [dim]source file: feature directory not found — "
+            "the chunk is still in the index[/dim]"
+        )
+    elif not resolved.source_exists:
+        console.print(
+            f"[yellow]⚠[/yellow]  [dim]source file missing: {source} — "
+            "the chunk resolves, but the file it came from has moved[/dim]"
+        )
+    else:
+        console.print(f"[dim]source: {source}[/dim]")
+    console.print()
+    # markup=False: chunk text is arbitrary research prose and routinely
+    # contains square brackets, which Rich would eat as markup.
+    console.print(resolved.text, markup=False, highlight=False)
+    console.print()
+
 
 # --------------------------------------------------------------------------- #
 # index

@@ -115,6 +115,60 @@ def expand_sources(sources: list[str]) -> tuple[list[str], list[tuple[str, str]]
     return targets, failures
 
 
+# ─── The summaries/ exclusion (FEAT-025) ──────────────────────────────────── #
+
+#: Directory names holding text Meridian *wrote*, which must never be embedded.
+#:
+#: `summaries/` holds synthesis: research briefs and paper briefs produced by
+#: reading the corpus. Indexing one closes a loop. The next `/research` would
+#: retrieve the model's own prior conclusion, cite it as if it were evidence,
+#: and write a more confident version of it; the round after that would cite
+#: *that*. Confidence compounds while the underlying evidence never changes.
+#:
+#: The failure is silent and looks like progress — each round reads better than
+#: the last, because agreement with itself is the one thing a corpus of its own
+#: output guarantees. Nothing in the output says "this came from me".
+#:
+#: So there is no flag to index `summaries/`, and there must not be one: a flag
+#: gets used on the day someone wants a brief to be searchable. A document that
+#: genuinely belongs in the corpus is a *source* and goes in `sources/`.
+SYNTHESIS_DIRS = frozenset({"summaries"})
+
+
+def is_synthesis_path(path: str | Path) -> bool:
+    """True when *path* lies inside a directory Meridian writes synthesis into.
+
+    Checks the literal path *and* its resolved form, so a symlink from
+    ``sources/`` into ``summaries/`` is caught too — that is the shape the loop
+    would most plausibly take back in through a door nobody remembered.
+
+    Only directory components count: a file merely *named* ``summaries`` is not
+    synthesis.
+    """
+    p = Path(path).expanduser()
+    parents = set(p.parent.parts)
+    try:
+        parents |= set(p.resolve().parent.parts)
+    except OSError:  # pragma: no cover - unresolvable path, literal check stands
+        pass
+    return bool(parents & SYNTHESIS_DIRS)
+
+
+def indexable_sources(sources_dir: Path) -> list[Path]:
+    """Every file under *sources_dir* that belongs in the vector corpus.
+
+    The single place that decides what gets embedded, so the exclusion above is
+    enforced by code rather than by the shape of a glob somebody may widen
+    later.
+
+    ``*.txt`` is extracted source text; ``*.notes.md`` is screenshot prose
+    (FEAT-006) and must be rebuilt too. A stray README.md — or a brief someone
+    copied or symlinked in — is not research and is left out.
+    """
+    files = sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.notes.md"))
+    return [f for f in files if not is_synthesis_path(f)]
+
+
 def _extract_pdf(path: Path) -> str:
     try:
         from pypdf import PdfReader
@@ -899,6 +953,27 @@ def _append_sources(spec_path: Path, refs: list[str]) -> None:
             data["sources"] = sources_list + added
 
 
+def _refuse_synthesis(source: str) -> None:
+    """Stop an ingest that would feed Meridian's own writing back into the corpus.
+
+    ``reindex_all`` cannot reach ``summaries/``, but ``enrich`` can be pointed
+    anywhere — and pointing it at a research brief is the one realistic way the
+    loop described on :data:`SYNTHESIS_DIRS` gets built. It is refused here
+    rather than warned about, because a warning is read once and the chunks
+    stay forever.
+    """
+    if _is_url(source):
+        return
+    if is_synthesis_path(source):
+        raise RuntimeError(
+            f"{Path(source).name} lives in summaries/, which holds Meridian's "
+            "own synthesis — refusing to index it.\n"
+            "An indexed brief becomes evidence for the next brief, and the "
+            "result reads better every round while resting on nothing new.\n"
+            "If this document really is a source, move it into sources/ first."
+        )
+
+
 def enrich_feature(
     cfg: MeridianConfig, feat_id: str, source: str, refresh: bool = False
 ) -> dict:
@@ -914,6 +989,7 @@ def enrich_feature(
     paper should not re-crawl twenty sites (AC15).
     """
     feat_id_norm = feat_id.upper()
+    _refuse_synthesis(source)
     spec_path = _find_spec_path(cfg, feat_id_norm)
     feat_dir = spec_path.parent
 
@@ -1021,6 +1097,9 @@ def ingest_screenshot(
     described_by: str | None = None
     if note_file is not None:
         note_path = Path(note_file).expanduser()
+        # The sidecar is the prose that actually gets embedded, so a brief
+        # passed as --note-file is the same loop by another route.
+        _refuse_synthesis(str(note_path))
         if not note_path.exists():
             raise FileNotFoundError(f"Note file not found: {note_path}")
         notes, reading, described_by = parse_sidecar(note_path.read_text(errors="replace"))
@@ -1116,14 +1195,15 @@ def _sidecar_image_ref(sidecar_path: Path) -> str:
 def _iter_source_files(specs_path: Path) -> Iterator[tuple[str, Path]]:
     """Yield ``(feat_id, path)`` for every indexable source file under specs/.
 
-    FEAT-006: *.notes.md carries screenshot prose, so it must be rebuilt too —
-    but only that pattern. A stray README.md or summaries/ file in sources/ is
-    not research and must not be indexed.
+    Delegates to :func:`indexable_sources` rather than repeating its glob.
+    FEAT-023 and FEAT-025 were built in parallel and each grew its own copy of
+    "which files are corpus"; two copies is how the symlink case (a brief linked
+    into ``sources/``) gets caught by one and missed by the other. There is one
+    decider — see :data:`SYNTHESIS_DIRS` for why that matters.
     """
     for sources_dir in sorted(specs_path.glob("FEAT-*/sources")):
         feat_id = sources_dir.parent.name.split("_")[0]
-        files = sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.notes.md"))
-        for src_file in files:
+        for src_file in indexable_sources(sources_dir):
             yield feat_id, src_file
 
 
