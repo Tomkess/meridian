@@ -104,6 +104,9 @@ exists.
 
 - **AC9** — A store written before this feature (no `content_hash` column) is
   **migrated, never dropped**. Its rows are re-embedded once and backfilled.
+  *As built:* this covers the FEAT-007-era schema, which is every store in
+  existence today. A **pre-FEAT-007** table (no `project` column) is still
+  recreated rather than migrated — see the Verification note.
 - **AC10** — Migration embeds before deleting, matching FEAT-013: an Ollama
   failure mid-migration leaves the existing rows intact and exits non-zero.
 - **AC11** — `meridian index` states plainly when a migration happened and what
@@ -119,7 +122,10 @@ exists.
 - **AC14** — A batch reports per-source outcome — ingested, skipped as
   unchanged, or failed with the reason — and exits non-zero if any failed.
 - **AC15** — `--refresh` re-fetches sources that came from a URL and re-embeds
-  only those whose extracted text has actually changed.
+  only those whose extracted text has actually changed. *As built:* the flag is
+  what makes a re-fetch happen at all — a URL already saved in `sources/` is
+  skipped without it, which is a deliberate change to the previous behaviour
+  (see Verification).
 
 ### Guards
 
@@ -165,3 +171,67 @@ reporting), and tests.
 
 The corpus is 178 chunks; a full rebuild today makes 178 embed calls. After this,
 a no-op rebuild must make zero — asserted directly, not measured by wall clock.
+
+### Result — 2026-08-20, branch `feat-023/incremental-ingest`
+
+**The headline number: zero.**
+`tests/test_incremental_ingest.py::TestNoOpRebuildEmbedsNothing::test_second_rebuild_makes_zero_embed_calls`
+builds a two-source corpus (4 chunks), asserts the first rebuild makes exactly 4
+`embed` calls, then asserts the second makes **0** — on the counter itself, not
+on elapsed time. The same property is asserted through the CLI: a second
+`meridian index` prints `0 chunks embedded`. A batch enrich of three text files
+where two are byte-identical made 4 embed calls, not 6, and the `meridian index`
+that followed made 0 — the enrich path and the rebuild path now share one cache.
+
+Gate: **696 tests pass** (655 before, 41 new), `ruff check .` clean,
+`mypy meridian/` clean — all through `uv run --locked`.
+
+**Schema.** `project, feat_id, source_name, chunk_idx, text, vector,
+content_hash, embedding_model`. The last two are new; they are appended, so a
+migrated table and a freshly created one have identical field order.
+
+**Three generations, named not counted.** `_is_legacy_schema() -> bool` is gone,
+replaced by `schema_generation(table) -> SchemaGeneration`:
+`PRE_PROJECT` (no `project`), `PRE_HASH` (FEAT-007 schema, no hash), `CURRENT`.
+A boolean could not express the middle case, which is the one that must be
+migrated rather than refused.
+
+**Migration.** `PRE_HASH` → `table.add_columns({...: "''"})`. Purely additive:
+every row keeps its vector and gets an empty hash, which reads as *unknown*, so
+this project re-embeds its own sources once and backfills, while other projects'
+rows sit untouched until they rebuild. Ordering is unchanged from FEAT-013 —
+chunking, hashing and embedding all happen before the store is touched at all,
+so **Ollama dying mid-migration leaves the table byte-for-byte as it was**, still
+`PRE_HASH`, and exits non-zero (asserted). A kill between `add_columns` and the
+writes is also safe: the empty hashes simply mean the next rebuild re-embeds.
+
+### Deviations
+
+- **AC9 — pre-FEAT-007 stores are still recreated, not migrated.** Those rows
+  carry no `project`, so there is no way to attribute them to a repo, reuse them
+  under AC7, or delete them selectively; the FEAT-007 recovery path (rebuild
+  from `sources/`, which is the source of truth) remains the only correct one,
+  and its existing test still asserts it. Every store written since FEAT-007 —
+  including the user's — takes the additive path. `reindex_all` now distinguishes
+  the two in its result: `migration` is `"backfilled"` or `"recreated"`, and
+  `migrated` stays True only for the destructive case, so the CLI never tells
+  someone their other projects were wiped when they were not.
+- **AC15 — `--refresh` changes the default for URL sources.** Without it, a URL
+  already saved in `sources/` is reported as skipped and *not re-fetched*.
+  Re-fetching is the only part of ingestion that leaves the machine, and a batch
+  re-run to pick up one new paper should not re-crawl twenty sites. With
+  `--refresh`, the fetch happens and the hash still decides whether anything is
+  re-embedded.
+- **Stale rows: behaviour preserved, not extended.** "Deleting rows for sources
+  removed from `sources/`" is Out of Scope, but the old code already did it via a
+  whole-project delete before every rebuild. Keeping that would have deleted the
+  rows of every *skipped* source. It is now a targeted delete of exactly the
+  `(feat_id, source_name)` pairs that no longer exist on disk — same outcome,
+  narrower blast radius. No new deletion path was added.
+
+### Not done
+
+- The bundled skill `enrich.md` still documents one source per invocation and
+  does not mention `--refresh` or directory arguments. Updating it touches the
+  shared skill files (and their `--sync` copy), which were outside this branch's
+  ownership.
