@@ -209,6 +209,37 @@ class TestDefaultBranch:
 
         assert default_branch(repo) is None
 
+    def test_none_when_the_remote_is_empty(self, tmp_path: Path) -> None:
+        """A repo created on GitHub and never pushed to.
+
+        `git remote show origin` answers `HEAD branch: (unknown)` there. Taken
+        literally that became a branch name, so the repo was reported as
+        *failed* with a raw "couldn't find remote ref (unknown)" rather than
+        skipped with a reason — nothing is wrong with it, there is just nothing
+        to branch from yet. Hit on two real repos.
+        """
+        origin = tmp_path / "empty-origin.git"
+        git(["init", "--bare", "-b", "main", str(origin)], tmp_path)
+        repo = tmp_path / "nothing-pushed"
+        repo.mkdir()
+        git(["init", "-b", "main", "."], repo)
+        git(["remote", "add", "origin", str(origin)], repo)
+
+        assert default_branch(repo) is None
+
+    def test_empty_remote_is_skipped_not_failed(self, tmp_path: Path) -> None:
+        origin = tmp_path / "empty-origin-2.git"
+        git(["init", "--bare", "-b", "main", str(origin)], tmp_path)
+        repo = tmp_path / "nothing-pushed-2"
+        repo.mkdir()
+        git(["init", "-b", "main", "."], repo)
+        git(["remote", "add", "origin", str(origin)], repo)
+
+        status, detail = open_skill_pr(entry_for(repo), "v1.2.3", dry_run=True)
+
+        assert status == "skipped", f"got {status}: {detail}"
+        assert "empty" in detail
+
 
 class TestOpenSkillPr:
     def test_skips_a_directory_that_is_not_a_repo(self, tmp_path: Path) -> None:

@@ -161,7 +161,14 @@ def default_branch(repo: Path) -> str | None:
     if r.returncode == 0:
         for line in r.stdout.splitlines():
             if "HEAD branch:" in line:
-                return line.split(":", 1)[1].strip()
+                name = line.split(":", 1)[1].strip()
+                # An empty remote — created but never pushed to — reports
+                # `HEAD branch: (unknown)`. Taken literally that became a branch
+                # name, and the repo was reported as *failed* with a raw
+                # "couldn't find remote ref (unknown)" instead of skipped with a
+                # reason. Nothing is wrong with the repo; there is just nothing
+                # to branch from yet.
+                return None if name in ("(unknown)", "unknown", "") else name
     return None
 
 
@@ -185,7 +192,7 @@ def open_skill_pr(
 
     base = default_branch(entry.path)
     if base is None:
-        return "skipped", "could not resolve the default branch"
+        return "skipped", "no default branch — is the remote empty (nothing pushed yet)?"
 
     branch = f"chore/meridian-skills-{version}"
 
