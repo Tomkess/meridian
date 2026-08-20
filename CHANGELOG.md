@@ -2,16 +2,77 @@
 
 ## 0.6.0 — 2026-08-20
 
-- chore: close FEAT-023, 024, 025, 026 as done
-- feat: wire citations into search output and document the wave
-- feat(FEAT-025): resolvable citations and research that persists
-- feat(search): cross-project prior art as a separate section (FEAT-024)
-- feat(FEAT-023): incremental, deduplicated ingestion
-- docs: document meridian next and the portfolio signals
-- feat(FEAT-026): rank work across projects instead of tallying it
-- fix: judge STEERING.md by its prose, not its comment count
-- docs: shape goal-01 and four features for the differentiators
-- docs: write the v0.5.0 changelog section
+Invests in the two capabilities nothing else offers — the spec-bound research
+corpus and the cross-repo portfolio view — under a new `goal-01`. Everything
+here serves one of those two; the spec pipeline was deliberately left alone.
+
+### Added
+
+- **Cross-project prior art** (FEAT-024). `--all-projects` now returns this
+  project's hits first and complete, then a separate, capped **Prior art**
+  section from other repos. Never merged, because the shared corpus is uneven
+  enough that a blended ranking is won by whichever repo has written the most:
+  measured on the real store, a merged ranking of a representative query
+  returned **zero** rows from the 2-chunk repo in its top 20 — its own research
+  was invisible, not merely outranked. Every foreign hit carries the absolute
+  path to its feature directory; one that cannot be resolved is marked, never
+  dropped. New `/prior-art` skill, and an opt-in on `/ask`.
+- **Resolvable citations** (FEAT-025). `meridian search` prints
+  `project:FEAT-NNN:source_name#chunk_idx` per hit — the four fields that
+  already identify a row, so no schema change and no second identity to
+  disagree with the first. `meridian cite <citation>` resolves it back to the
+  exact chunk and **exits non-zero when the chunk is gone**: the evidence moved,
+  so the conclusion resting on it is unverified. Resolves across projects via
+  the registry, distinguishing "project untracked" from "chunk missing".
+- **`/research` and `/brief` persist** to `summaries/research-YYYY-MM-DD.md`,
+  recorded in a new `briefs:` frontmatter field. Same-day re-runs update that
+  day's file; an earlier one is never modified, because the diff is the only
+  record that a conclusion changed. Uncited claims are labelled inferences.
+- **`meridian next`** (FEAT-026) ranks work across every tracked project with no
+  repo checked out: blocked longest → in-progress nearest completion →
+  in-progress stalled → draft → idea. Every row states the signal that put it
+  there, because an opaque score would be worse than the tally it replaces.
+- **`status --all` gains staleness and cycle capacity.** Capacity is summed
+  *across* projects — Shape Up's "at most two large bets" is meaningless per
+  repo when you have ten. Staleness comes from file mtimes, not git, and the
+  output says so on every run: a fresh clone resets them.
+
+### Changed
+
+- **Ingestion is incremental and deduplicated** (FEAT-023). Every chunk stores a
+  `content_hash` and its `embedding_model`; a rebuild re-embeds only what
+  changed and reuses a vector whenever identical text already has one, across
+  features and across projects. A no-op `meridian index` now makes **zero**
+  Ollama calls where it previously re-embedded the entire corpus — the reason
+  corpus maintenance cost used to scale with corpus size. Reuse is scoped by
+  model, since vectors from different models are not comparable.
+- **`meridian enrich` takes several sources**, or a directory (non-recursive).
+  Per-source atomic, so one unreadable file does not lose what already
+  ingested; reports per-source outcome and exits non-zero if any failed.
+- **A URL already in `sources/` is no longer silently re-fetched.** `--refresh`
+  opts in.
+- **The schema migration is additive, never destructive.** A store predating the
+  hash columns is backfilled in place — no row is deleted before its replacement
+  exists, and an Ollama failure mid-migration leaves the store untouched and
+  exits non-zero. Verified against a real 178-chunk store across five projects:
+  178 rows before, 178 after, every project's counts identical.
+
+### Fixed
+
+- **`summaries/` can no longer be indexed** — now on purpose rather than by
+  accident of a glob. An indexed brief would let the next `/research` retrieve
+  the model's own prior conclusion and cite it as evidence, compounding
+  confidence while the evidence never changes, and reading *better* each round.
+  The symlink route is closed too, and `enrich` refuses such a source outright.
+  There is deliberately no flag to opt in.
+- **The whole-project delete before each rebuild is now targeted.** Left as-is,
+  incremental indexing would have deleted every *skipped* source's rows — the
+  new feature would have quietly eaten the corpus.
+- **`meridian guide` judges `STEERING.md` by its prose**, not its comment count.
+  It flagged Meridian's own 3.4 KB steering file as an unfilled template, and
+  passed a single large comment wrapped around nothing.
+
+901 tests (was 655), ruff and mypy clean.
 
 ## 0.5.0 — 2026-08-19
 
