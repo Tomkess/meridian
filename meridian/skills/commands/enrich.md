@@ -12,6 +12,18 @@ Use this when the user attaches a screenshot and wants it kept as research: a br
 an unexpected chart, a UI state worth remembering. For PDFs, URLs, and text files, use
 `meridian enrich <feat-id> <source>` directly instead — no skill needed.
 
+That command takes **several sources at once**, and a directory ingests every `.pdf`, `.txt`
+and `.md` inside it (non-recursive). Each source is embedded fully before its own rows are
+written, so one unreadable file does not lose the sources already ingested in that run; the
+command reports per-source outcome and exits non-zero if any failed.
+
+Re-running is cheap: a source whose text has not changed is skipped without touching Ollama.
+A URL already saved in `sources/` is **not** re-fetched unless you pass `--refresh`.
+
+Never enrich a file from `summaries/` — that directory holds Meridian's own synthesis, and the
+command refuses it. Indexing a brief makes the next `/research` cite the model's own prior
+conclusion as evidence.
+
 ## Why this skill exists
 
 An image attached in chat reaches you as pixels with **no filesystem path**, so you can see it but

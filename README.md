@@ -160,15 +160,20 @@ stateDiagram-v2
 | `meridian cycle feat-007 --clear` | Remove from cycle |
 | `meridian revive feat-007` | Revive abandoned feature → idea (preserves reason) |
 | `meridian enrich feat-007 report.pdf` | Ingest PDF / URL / file → LanceDB |
+| `meridian enrich feat-007 a.pdf b.pdf papers/` | Ingest several sources, or every file in a directory |
+| `meridian enrich feat-007 <url> --refresh` | Re-fetch a URL already saved in `sources/` |
 | `meridian enrich feat-007 shot.png --note "what is wrong"` | Ingest a screenshot: image copied verbatim, notes embedded |
 | `meridian enrich feat-007 --latest-screenshot --note "…"` | Same, using the newest image in the OS screenshot dir |
 | `meridian enrich feat-007 --from-clipboard --note "…"` | Same, using the clipboard image (macOS) |
 | `meridian enrich feat-007 shot.png --note-file notes.md` | Take notes (and any agent visual reading) from a sidecar |
 | `meridian enrich feat-007 shot.png --note "…" --vision` | Fallback: add a local Ollama vision caption |
-| `meridian search "query"` | Semantic search across all enriched research |
-| `meridian index` | Rebuild REGISTRY.md + full vector index |
+| `meridian search "query"` | Semantic search across this project's research |
+| `meridian search "query" --all-projects` | Plus a separate prior-art section from other repos |
+| `meridian cite <citation>` | Resolve a citation back to the exact chunk |
+| `meridian next` | What to work on next, ranked across every tracked project |
+| `meridian index` | Rebuild REGISTRY.md + incremental vector index |
 | `meridian transition --from-merge feat-007/slug` | Auto-transition to in-production after merge |
-| `meridian guide` | 8-step project advisor |
+| `meridian guide` | 9-step project advisor |
 | `meridian help` | List every command (generated from the CLI) |
 
 **Valid `--status` values:** `idea` `draft` `in-progress` `blocked` `done` `in-production` `abandoned`
@@ -188,6 +193,7 @@ stateDiagram-v2
 | `/decision <title>` | `decisions/` | `decisions/NNN-slug.md` |
 | `/enrich <feat> "<note>"` | attached screenshot | `sources/<slug>.png` + `.notes.md` |
 | `/ask [question]` | enriched research chunks | — (RAG answer) |
+| `/prior-art <question>` | every project's chunks | — (answer + repo paths) |
 | `/research <feat>` | all sources, search index | — (synthesis report) |
 | `/brief <feat> [source]` | source file | `summaries/*-brief.md` |
 

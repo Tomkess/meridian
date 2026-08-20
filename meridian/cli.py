@@ -680,13 +680,18 @@ def next_up(
     # truncated, while the name and the reason can wrap.
     table = Table(box=box.SIMPLE, show_header=True, header_style="bold", pad_edge=False)
     table.add_column("#", justify="right", no_wrap=True, width=3)
-    table.add_column("Project", no_wrap=True, min_width=12)
+    table.add_column("Project", no_wrap=True, max_width=18, overflow="ellipsis")
     table.add_column("Feature", no_wrap=True, width=8)
     # Name is capped rather than left to grow: it is the one column whose
     # content is unbounded (a captured idea can be a paragraph), and letting it
     # take its natural width squeezes the reason down to nothing on an 80-column
     # terminal — the reason being the column this command exists for.
-    table.add_column("Name", min_width=12, max_width=42, overflow="ellipsis")
+    #
+    # `no_wrap` is required for `overflow="ellipsis"` to do anything: without it
+    # Rich wraps first and never truncates, and the row becomes four lines tall.
+    # 30 rather than 42 so the five columns actually fit 80 columns — at 42 the
+    # reason wrapped instead, which is the same failure moved one column right.
+    table.add_column("Name", min_width=12, max_width=24, overflow="ellipsis", no_wrap=True)
     table.add_column("Why", min_width=20)
 
     for i, feature in enumerate(shown, start=1):
@@ -1160,6 +1165,22 @@ def _report_enrich(result: dict) -> None:
 # search
 # --------------------------------------------------------------------------- #
 
+def _citation_of(r: dict) -> str | None:
+    """The citation for a hit, or None when the row cannot name a chunk.
+
+    FEAT-025 AC1. A row missing any of the four identity fields is not
+    citable — that is a real state (a malformed or pre-FEAT-007 row), and it
+    must degrade to "no citation" rather than to a plausible-looking string
+    that `meridian cite` would then fail to resolve.
+    """
+    from meridian.citations import CitationFormatError, format_citation
+
+    try:
+        return format_citation(r)
+    except CitationFormatError:
+        return None
+
+
 def _search_row(r: dict, cfg, result_label) -> dict:
     """One search hit as JSON. Prior-art fields ride along when present."""
     row = {
@@ -1168,6 +1189,7 @@ def _search_row(r: dict, cfg, result_label) -> dict:
         "label": result_label(r, cfg),
         "source_name": r.get("source_name"),
         "chunk_idx": r.get("chunk_idx"),
+        "citation": _citation_of(r),
         "score": r.get("rerank_score", r.get("_distance")),
         "text": r.get("text"),
     }
@@ -1188,6 +1210,11 @@ def _print_hit(index: int, r: dict, name: str) -> None:
         f"[bold]{index}.[/bold] [blue]{name}[/blue] "
         f"[dim]{r['source_name']} ·chunk {r['chunk_idx']}[/dim]{score_str}"
     )
+    # FEAT-025 AC1: the citation is printed so it can be copied into a brief and
+    # checked later with `meridian cite`. It is the row's identity, not a label.
+    citation = _citation_of(r)
+    if citation:
+        console.print(f"   [dim]cite:[/dim] [cyan]{citation}[/cyan]")
 
 
 def _preview(r: dict) -> str:

@@ -29,14 +29,17 @@ meridian close <feat-id> --status abandoned --abandoned-reason "why"  # reason p
 meridian close <feat-id> --confidence high   # update problem confidence (low|medium|high)
 meridian cycle <feat-id> --set 2026-Q2       # assign to planning cycle (warns if overloaded)
 meridian cycle <feat-id> --clear             # remove from cycle
-meridian enrich <feat-id> <source>           # add research (PDF/URL/file)
+meridian enrich <feat-id> <source>...        # add research (PDF/URL/file) — many at once
+meridian enrich <feat-id> <dir>              # ingest every .pdf/.txt/.md in a directory
+meridian enrich <feat-id> <url> --refresh    # re-fetch a URL already saved in sources/
 meridian enrich <feat-id> <image> --note "what is wrong"      # ingest annotated screenshot
 meridian enrich <feat-id> --latest-screenshot --note "..."    # grab newest OS screenshot
 meridian enrich <feat-id> --from-clipboard --note "..."       # grab clipboard image (macOS)
 meridian enrich <feat-id> <image> --note-file <path>          # notes (+ visual reading) from a sidecar
 meridian enrich <feat-id> <image> --note "..." --vision       # add local Ollama caption (fallback)
 meridian search "query"                      # semantic search across this project's research
-meridian search "query" --all-projects       # widen to every project sharing the index
+meridian search "query" --all-projects       # + a separate "prior art" section from other repos
+meridian cite <citation>                     # resolve a citation back to the exact chunk
 meridian index                               # rebuild vector index + REGISTRY.md
 meridian index --vectors-only                # vectors only — leaves REGISTRY.md untouched
 meridian transition --from-merge <branch>    # auto-transition after git merge (branch: feat-NNN/slug)
@@ -58,7 +61,8 @@ meridian help                                # list every command
 | `/decision` | Write ADR |
 | `/enrich <feat> "<note>"` | Ingest an attached screenshot + notes + agent visual reading |
 | `/ask [question]` | RAG Q&A — answer a question from enriched research |
-| `/research <feat>` | Deep synthesis — findings, gaps, next research actions |
+| `/prior-art <question>` | Have I solved this before, in another repo? |
+| `/research <feat>` | Deep synthesis with citations → `summaries/research-<date>.md` |
 | `/brief <feat> [source]` | One-page paper brief (≤ 550 words, A4) → summaries/ |
 
 ## Releasing
@@ -97,6 +101,38 @@ Dev tooling lives in `[dependency-groups] dev` (PEP 735), not in
 package. `rerank` stays a real extra — it is a user-facing install option.
 
 Installed from git, not PyPI — the name is taken there by an unrelated project.
+
+## Research corpus
+
+**Ingestion is incremental.** Every chunk stores a `content_hash` and the
+`embedding_model` that produced its vector, so a rebuild re-embeds only what
+changed and reuses a vector whenever identical text already has one — across
+features *and* across projects, since the vector is a pure function of (text,
+model). A no-op `meridian index` makes zero Ollama calls, which is what makes a
+large corpus maintainable at all.
+
+Reuse is scoped by model: vectors from two different embedding models are not
+comparable, so a model change re-embeds rather than silently mixing spaces.
+
+**Prior art is a separate section, never merged.** The shared store is uneven —
+one repo may hold 73 chunks next to another's 2 — so a single blended ranking is
+won by whichever repo has written the most, and a search from the small repo
+returns nothing of its own. `--all-projects` therefore returns this project's
+hits first and complete, then a capped per-project prior-art section. Each
+foreign hit carries the absolute path to its feature directory, and one that
+cannot be resolved is marked rather than dropped.
+
+**Citations are the row's identity**: `project:FEAT-NNN:source_name#chunk_idx`.
+`meridian search` prints one per hit and `meridian cite` resolves it back to the
+exact chunk, exiting non-zero when the chunk is gone — the evidence moved, so the
+conclusion resting on it is unverified.
+
+**`summaries/` is never indexed.** It holds what Meridian *wrote*. Indexing a
+brief would let the next `/research` retrieve the model's own prior conclusion
+and cite it as evidence, writing a more confident version of it — a loop that
+compounds confidence while the underlying evidence never changes, and that reads
+better every round. There is deliberately no flag to opt in, and `enrich`
+refuses a source under `summaries/` outright.
 
 ## Stack
 
@@ -257,6 +293,8 @@ is the failure mode that matters now that git no longer carries the file.
 | `blocked_at` | ISO date | Set automatically when entering `blocked`; cleared on unblock |
 | `abandoned_reason` | string | Why it was killed — persists through revive for future context |
 | `abandoned_at` | ISO date | Set automatically when abandoned; cleared on revive |
+| `sources` | list of `sources/...` refs | Research indexed into the corpus |
+| `briefs` | list of `summaries/...` refs | Persisted synthesis, so a reader of `spec.md` finds the reasoning without listing the directory |
 
 ## Appetite scale
 
