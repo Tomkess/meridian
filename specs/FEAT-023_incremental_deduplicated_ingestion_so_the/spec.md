@@ -15,7 +15,7 @@ goal: goal-01
 id: feat-023
 name: Incremental, deduplicated ingestion so the corpus can grow
 sources: []
-status: draft
+status: done
 tags: []
 updated: '2026-08-20'
 ---

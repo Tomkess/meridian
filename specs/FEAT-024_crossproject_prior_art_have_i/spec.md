@@ -14,7 +14,7 @@ goal: goal-01
 id: feat-024
 name: 'Cross-project prior art: have I solved this before'
 sources: []
-status: draft
+status: done
 tags: []
 updated: '2026-08-20'
 ---

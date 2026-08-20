@@ -7,15 +7,16 @@ blocked_by: null
 confidence: medium
 created: '2026-08-19'
 cycle: null
-depends_on: [feat-023]
+depends_on:
+- feat-023
 enables: []
 goal: goal-01
 id: feat-025
-name: 'Research that persists with resolvable citations'
+name: Research that persists with resolvable citations
 sources: []
-status: draft
+status: done
 tags: []
-updated: '2026-08-19'
+updated: '2026-08-20'
 ---
 
 ## Summary

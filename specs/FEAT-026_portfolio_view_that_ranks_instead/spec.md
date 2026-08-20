@@ -13,7 +13,7 @@ goal: goal-01
 id: feat-026
 name: Portfolio view that ranks instead of tallies
 sources: []
-status: draft
+status: done
 tags: []
 updated: '2026-08-20'
 ---
