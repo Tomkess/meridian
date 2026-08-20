@@ -157,3 +157,55 @@ the ordering rules as pure functions, and tests.
 Against the real five-project registry: `meridian next` must rank without any
 repo being checked out, and the ordering rule must be reproducible by hand from
 the printed reasons.
+
+### Result — 2026-08-20, branch `feat-026/portfolio-next`
+
+Ranking lives in `meridian/portfolio.py`. `tier`, `rank_key`, `reason` and
+`rank` are pure functions over `Feature` values — no Rich, no typer, no
+filesystem — so the ordering is testable without fixtures and a `--json`
+consumer can re-rank from the emitted signals. `gather` is the only part that
+touches disk, and it reads each project's specs exactly once; counts,
+staleness, capacity and the ranking are all derived from that single pass.
+
+Gate: `uv run --locked python -m pytest -q` → **720 passed**;
+`uv run --locked ruff check .` → clean; `uv run --locked mypy meridian/` →
+clean. New tests: `tests/test_portfolio.py` (42, one per ordering rule) and
+`tests/test_portfolio_cli.py` (23, one per AC).
+
+Run against the real registry, read-only, from outside every tracked repo:
+
+```
+   #   Project                 Feature    Name                             Why
+   1   gdc-mic-ai-evaluation   FEAT-010   Set up Langfuse connection to…   12 of 15 tasks done
+   2   bet365-apify-scraper    FEAT-001   I need to download bet365.de     18 of 27 tasks done, nothing changed in 79 days
+   3   portfolio-management    FEAT-013   Portfolio Publishing & Perfor…   in progress, no tasks checked yet, nothing changed in 65 days
+   …
+  13 more not shown — showing 8 of 21. Raise --limit to see the rest.
+```
+
+No feature is currently blocked anywhere, so the top band is empty in this run;
+it is covered by tests instead.
+
+All 15 acceptance criteria are implemented. Two places where the code is more
+specific than the AC text, both deliberate and both visible in the output:
+
+- **AC3, where in-progress splits.** "Nearest completion" needs a completion to
+  be near, so the split is *has any task been checked*: at least one checked
+  ranks by tasks remaining (ties break toward the more complete feature), none
+  checked drops to the stalled band ordered longest-untouched first. Without
+  that rule an untouched feature with a 20-item task list outranks one that is
+  11 of 12 done — the padding risk this spec already names, arriving through a
+  different door.
+- **AC3, order *within* draft and idea.** The rule fixes where the two bands sit
+  but not how each is sorted. Both are freshest-first: a spec shaped this week
+  is likelier to be startable than a year-old capture, and it keeps the bottom
+  of the list from being led by inventory nobody intends to build.
+
+Thresholds, for the record: blocked-age is `meridian guide`'s 14 days, imported
+rather than re-declared; "stale" is 30 days without a spec or task file change;
+appetite weights are shared with `meridian cycle`'s capacity summary so the two
+views cannot disagree on what an `l` costs.
+
+`CLAUDE.md`'s command list does not yet mention `meridian next` — left untouched
+because another agent was editing the same files at the time. It is the one
+follow-up this feature needs.

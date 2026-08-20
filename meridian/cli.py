@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from meridian import __version__
+from meridian import __version__, portfolio
 from meridian.config import load_config, slugify_project
 from meridian.skilldist import open_skill_prs, sync_all, sync_skills
 from meridian.specs import (
@@ -115,8 +115,10 @@ def _config():
 
 # ── Cycle capacity helpers ────────────────────────────────────────────────── #
 
-# Weighted effort units (arbitrary but proportional to appetite labels)
-_APPETITE_WEIGHT: dict[str, float] = {"xs": 0.5, "s": 1.0, "m": 3.0, "l": 6.0}
+# Weighted effort units (arbitrary but proportional to appetite labels).
+# FEAT-026 moved the table into meridian.portfolio so the per-cycle summary and
+# the cross-project capacity view cannot drift apart on what an "l" costs.
+_APPETITE_WEIGHT: dict[str, float] = portfolio.APPETITE_WEIGHT
 _CYCLE_WARN_THRESHOLD = 12.0  # ≈ 2 full "l" features
 
 
@@ -196,13 +198,140 @@ def _tracked_projects():
         raise typer.Exit(1)
 
 
-def _project_summary(specs_path: Path) -> dict[str, int]:
-    """Count features by status for one project."""
-    counts: dict[str, int] = {}
-    for spec in all_specs(specs_path):
-        key = str(spec.get("status", "idea"))
-        counts[key] = counts.get(key, 0) + 1
-    return counts
+def _stale_cell(days: int | None) -> str:
+    """The `chg` column: days since anything in the project changed (FEAT-026).
+
+    Marked the way blocked counts already are — bold red — because a project
+    nobody has touched in a month is the same class of problem as a blocked
+    feature: it only gets worse by being left alone.
+    """
+    if days is None:
+        return "[dim]·[/dim]"
+    if days >= portfolio.STALE_DAYS:
+        return f"[bold red]{days}d[/bold red]"
+    return f"{days}d"
+
+
+def _render_capacity(port: portfolio.Portfolio) -> None:
+    """Per-project committed appetite plus the portfolio total (FEAT-026).
+
+    Shape Up's "at most two big bets" is checked *across* projects here. Two
+    large bets in each of five repos is ten, which is the failure the guidance
+    exists to prevent and which no per-repo check can see.
+    """
+    total = port.capacity()
+    if not (total.committed or total.uncommitted):
+        return
+
+    console.print()
+    console.print("  [bold]Cycle capacity[/bold]")
+
+    table = Table(box=None, show_header=False, pad_edge=False)
+    table.add_column("Project", no_wrap=True, min_width=20)
+    table.add_column("Committed", min_width=30)
+    table.add_column("Uncommitted", no_wrap=True, min_width=14)
+
+    for view in port.projects:
+        cap = view.capacity
+        if cap.committed:
+            mix = " ".join(f"{n}×{a}" for a, n in cap.by_appetite)
+            committed = f"{cap.committed} committed"
+            if mix:
+                committed += f" · {mix}"
+            committed += f" · {cap.weight:g} units"
+            if cap.unsized:
+                committed += f" · [yellow]{cap.unsized} with no appetite[/yellow]"
+            if cap.cycles:
+                committed += f" · [dim]{', '.join(cap.cycles)}[/dim]"
+        else:
+            committed = "[dim]nothing committed[/dim]"
+        # Uncommitted is deliberately not folded into "0 committed": active
+        # work carrying no cycle is a different state from no work at all.
+        uncommitted = (
+            f"[yellow]{cap.uncommitted} uncommitted[/yellow]" if cap.uncommitted
+            else "[dim]—[/dim]"
+        )
+        table.add_row(f"  {view.slug}", committed, uncommitted)
+
+    console.print(table)
+
+    parts = [f"[bold]{total.committed}[/bold] committed", f"{total.weight:g} units"]
+    if total.large_bets:
+        parts.append(f"{total.large_bets} large bet{'s' if total.large_bets != 1 else ''}")
+    if total.uncommitted:
+        parts.append(f"[yellow]{total.uncommitted} uncommitted[/yellow][dim]")
+    console.print("  [dim]Portfolio: " + " · ".join(parts) + "[/dim]")
+
+    if total.overloaded:
+        console.print(
+            f"  [bold red]⚠[/bold red]  {total.large_bets} large bets committed across "
+            f"{total.projects_committed} projects — Shape Up suggests at most "
+            f"{portfolio.MAX_LARGE_BETS} at a time."
+        )
+        console.print(
+            "     [dim]Each repo's own capacity check sees only itself, so this is "
+            "invisible from inside any one of them.[/dim]"
+        )
+
+
+def _project_json(
+    entry, view: portfolio.ProjectView | None, why: str | None
+) -> dict:
+    """One project row for `status --all --json`.
+
+    A project that could not be read still appears, carrying the reason —
+    dropping it from the payload would make an agent conclude it no longer
+    exists.
+    """
+    if view is None:
+        return {
+            "slug": entry.slug, "path": str(entry.path), "purpose": entry.purpose,
+            "exists": entry.exists, "counts": None, "days_since_change": None,
+            "stale": None, "unreadable_specs": None, "capacity": None, "skipped": why,
+        }
+    days = view.days_since_change
+    return {
+        "slug": entry.slug,
+        "path": str(entry.path),
+        "purpose": entry.purpose,
+        "exists": entry.exists,
+        "counts": view.counts,
+        "days_since_change": days,
+        "stale": days is not None and days >= portfolio.STALE_DAYS,
+        "unreadable_specs": view.unreadable_specs,
+        "capacity": _capacity_json(view.capacity),
+        "skipped": why,
+    }
+
+
+def _capacity_json(cap: portfolio.Capacity) -> dict:
+    return {
+        "committed": cap.committed,
+        "weight": cap.weight,
+        "by_appetite": dict(cap.by_appetite),
+        "large_bets": cap.large_bets,
+        "uncommitted": cap.uncommitted,
+        "unsized": cap.unsized,
+        "cycles": list(cap.cycles),
+    }
+
+
+def _report_skips(port: portfolio.Portfolio) -> None:
+    """Projects that could not be read, and specs that would not parse.
+
+    Both are reported rather than dropped: a tracked path that no longer
+    resolves may simply be on another disk, and a spec Meridian cannot read is
+    the one most likely to need attention.
+    """
+    for skip in port.skipped:
+        console.print(f"  [yellow]⚠[/yellow]  [bold]{skip.slug}[/bold] skipped — {skip.why}")
+    for view in port.projects:
+        if view.unreadable_specs:
+            console.print(
+                f"  [yellow]⚠[/yellow]  [bold]{view.slug}[/bold]: "
+                f"{view.unreadable_specs} spec(s) could not be parsed and are not "
+                "counted — see the warnings above."
+            )
 
 
 def _status_all() -> None:
@@ -212,6 +341,9 @@ def _status_all() -> None:
     is the question that actually matters once Meridian is installed in ten
     projects. Reads each tracked repo's specs directly — no repo needs to be
     checked out or current.
+
+    FEAT-026 added the `chg` column and the capacity block, both derived from
+    the same single pass over each project's specs.
     """
     entries = _tracked_projects()
     if not entries:
@@ -219,6 +351,8 @@ def _status_all() -> None:
             "[dim]No projects tracked. Run [bold]meridian register[/bold] in each repo.[/dim]"
         )
         raise typer.Exit(0)
+
+    port = portfolio.gather(entries)
 
     table = Table(box=box.SIMPLE, show_header=True, header_style="bold")
     # The project name is the row's identity — it must never be the thing that
@@ -231,26 +365,17 @@ def _status_all() -> None:
     table.add_column("Project", no_wrap=True, min_width=20)
     for _label, header in _STATUS_COLUMNS:
         table.add_column(header, justify="right", no_wrap=True, width=5)
+    table.add_column("chg", justify="right", no_wrap=True, width=5)
 
     totals: dict[str, int] = {}
-    unreadable = []
 
-    for entry in sorted(entries, key=lambda e: e.slug):
-        if not entry.exists:
-            unreadable.append((entry.slug, "path not found"))
-            continue
-        specs_path = entry.path / "specs"
-        if not specs_path.is_dir():
-            unreadable.append((entry.slug, "no specs/ directory"))
-            continue
-
-        counts = _project_summary(specs_path)
-        for k, v in counts.items():
+    for view in port.projects:
+        for k, v in view.counts.items():
             totals[k] = totals.get(k, 0) + v
 
         cells = []
         for label, _header in _STATUS_COLUMNS:
-            n = counts.get(label, 0)
+            n = view.counts.get(label, 0)
             if n == 0:
                 cells.append("[dim]·[/dim]")
             elif label == "blocked":
@@ -259,7 +384,8 @@ def _status_all() -> None:
                 cells.append(f"[yellow]{n}[/yellow]")
             else:
                 cells.append(str(n))
-        table.add_row(entry.slug, *cells)
+        cells.append(_stale_cell(view.days_since_change))
+        table.add_row(view.slug, *cells)
 
     console.print()
     console.print(table)
@@ -272,9 +398,14 @@ def _status_all() -> None:
     if blocked:
         summary += f" · [bold red]{blocked} blocked[/bold red][dim]"
     console.print(summary + "[/dim]")
+    # AC9: a signal whose limits are hidden gets trusted too far.
+    console.print(
+        f"  [dim]chg = days since anything changed. {portfolio.STALENESS_NOTE}[/dim]"
+    )
 
-    for slug, why in unreadable:
-        console.print(f"  [yellow]⚠[/yellow]  [bold]{slug}[/bold] skipped — {why}")
+    _render_capacity(port)
+    console.print()
+    _report_skips(port)
 
 
 @app.command()
@@ -291,18 +422,29 @@ def status(
     """Show full feature dashboard with lifecycle states."""
     if all_projects:
         if as_json:
+            entries = sorted(_tracked_projects(), key=lambda e: e.slug)
+            port = portfolio.gather(entries)
+            views = {v.slug: v for v in port.projects}
+            skipped = {s.slug: s.why for s in port.skipped}
+            across = port.capacity()
             _emit_json({
                 "projects": [
-                    {
-                        "slug": e.slug,
-                        "path": str(e.path),
-                        "purpose": e.purpose,
-                        "exists": e.exists,
-                        "counts": _project_summary(e.path / "specs")
-                        if e.exists and (e.path / "specs").is_dir() else None,
-                    }
-                    for e in sorted(_tracked_projects(), key=lambda e: e.slug)
-                ]
+                    _project_json(e, views.get(e.slug), skipped.get(e.slug))
+                    for e in entries
+                ],
+                "portfolio": {
+                    "committed": across.committed,
+                    "weight": across.weight,
+                    "large_bets": across.large_bets,
+                    "max_large_bets": portfolio.MAX_LARGE_BETS,
+                    "overloaded": across.overloaded,
+                    "uncommitted": across.uncommitted,
+                    "unsized": across.unsized,
+                    "projects_committed": across.projects_committed,
+                    "cycles": list(across.cycles),
+                },
+                "stale_days": portfolio.STALE_DAYS,
+                "staleness_note": portfolio.STALENESS_NOTE,
             })
         _status_all()
         raise typer.Exit(0)
@@ -447,6 +589,138 @@ def status(
             console.print(f"{indicator}[bold]{cycle_id}[/bold]  {len(cycle_specs)} features ({parts})")
 
     console.print()
+
+
+# --------------------------------------------------------------------------- #
+# next  — what should I work on, across everything? (FEAT-026)
+# --------------------------------------------------------------------------- #
+
+_NEXT_HELP = (
+    "Rank what to work on next across every tracked project.\n\n"
+    f"Ordering: {portfolio.ORDERING_RULE}. "
+    "Done, shipped and abandoned features never rank — they are outcomes, not options.\n\n"
+    "Every row states the signal that put it where it is, so the ordering can be "
+    "argued with instead of trusted. --json carries those raw signals, so a skill "
+    "can re-rank without re-deriving them."
+)
+
+
+@app.command(name="next", help=_NEXT_HELP)
+def next_up(
+    limit: int = typer.Option(
+        0, "--limit", "-n",
+        help="Show at most N rows (0 = all). Dropped rows are counted, never hidden.",
+    ),
+    project: str | None = typer.Option(
+        None, "--project", "-p", help="Narrow to one tracked project slug",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of a table",
+    ),
+) -> None:
+    """Rank what to work on next across every tracked project."""
+    entries = _tracked_projects()
+    if not entries:
+        if as_json:
+            _emit_json({
+                "features": [], "shown": 0, "dropped": 0, "total": 0,
+                "ordering": portfolio.ORDERING_RULE, "skipped": [],
+            })
+        console.print(
+            "[dim]No projects tracked. Run [bold]meridian register[/bold] in each repo.[/dim]"
+        )
+        raise typer.Exit(0)
+
+    if project:
+        slugs = sorted(e.slug for e in entries)
+        if project not in slugs:
+            console.print(f"[red]Error:[/red] No tracked project named [bold]{project}[/bold].")
+            console.print(f"  [dim]Tracked: {', '.join(slugs)}[/dim]")
+            raise typer.Exit(1)
+
+    port = portfolio.gather(entries)
+    ordered = portfolio.rank(port.features(), project=project)
+    shown = ordered[:limit] if limit > 0 else ordered
+    dropped = len(ordered) - len(shown)
+
+    if as_json:
+        _emit_json({
+            "ordering": portfolio.ORDERING_RULE,
+            "staleness_note": portfolio.STALENESS_NOTE,
+            "stale_days": portfolio.STALE_DAYS,
+            "project": project,
+            "limit": limit or None,
+            "total": len(ordered),
+            "shown": len(shown),
+            "dropped": dropped,
+            "features": [portfolio.as_dict(f) for f in shown],
+            "skipped": [
+                {"slug": s.slug, "path": s.path, "why": s.why} for s in port.skipped
+            ],
+            "unreadable_specs": [
+                {"slug": v.slug, "count": v.unreadable_specs}
+                for v in port.projects if v.unreadable_specs
+            ],
+        })
+
+    scope = f" in [bold]{project}[/bold]" if project else f" across {len(port.projects)} projects"
+    console.print()
+    console.print(f"  [bold]Meridian — what to work on next[/bold][dim]{scope}[/dim]")
+    console.print()
+
+    if not shown:
+        console.print("  [dim]Nothing actionable — no blocked, in-progress, draft or idea "
+                      "features found.[/dim]")
+        console.print()
+        _report_skips(port)
+        raise typer.Exit(0)
+
+    # Explicit widths for the same reason `status --all` uses them: the row's
+    # identity (project + feature ID) must never be the thing that gets
+    # truncated, while the name and the reason can wrap.
+    table = Table(box=box.SIMPLE, show_header=True, header_style="bold", pad_edge=False)
+    table.add_column("#", justify="right", no_wrap=True, width=3)
+    table.add_column("Project", no_wrap=True, min_width=12)
+    table.add_column("Feature", no_wrap=True, width=8)
+    # Name is capped rather than left to grow: it is the one column whose
+    # content is unbounded (a captured idea can be a paragraph), and letting it
+    # take its natural width squeezes the reason down to nothing on an 80-column
+    # terminal — the reason being the column this command exists for.
+    table.add_column("Name", min_width=12, max_width=42, overflow="ellipsis")
+    table.add_column("Why", min_width=20)
+
+    for i, feature in enumerate(shown, start=1):
+        table.add_row(
+            str(i),
+            feature.project,
+            feature.feat_id,
+            portfolio.clip(feature.name, 44),
+            Text(portfolio.reason(feature), style=_REASON_STYLE.get(
+                portfolio.tier(feature) or 0, ""
+            )),
+        )
+
+    console.print(table)
+    console.print(f"  [dim]Ordering: {portfolio.ORDERING_RULE}.[/dim]")
+    if dropped:
+        # AC4: a silent truncation reads as "that is everything".
+        console.print(
+            f"  [yellow]{dropped} more not shown[/yellow][dim] — showing {len(shown)} of "
+            f"{len(ordered)}. Raise [bold]--limit[/bold] to see the rest.[/dim]"
+        )
+    console.print(f"  [dim]{portfolio.STALENESS_NOTE}[/dim]")
+    console.print()
+    _report_skips(port)
+
+
+# Blocked reads as the alarm it is; finishing work is the encouraging one.
+_REASON_STYLE = {
+    portfolio.TIER_BLOCKED: "bold red",
+    portfolio.TIER_FINISHING: "green",
+    portfolio.TIER_STALLED: "yellow",
+    portfolio.TIER_DRAFT: "",
+    portfolio.TIER_IDEA: "dim",
+}
 
 
 # --------------------------------------------------------------------------- #
