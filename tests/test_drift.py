@@ -255,3 +255,140 @@ class TestSunsettingAShippedFeature:
 
         assert "abandoned" in VALID_TRANSITIONS["done"]
         assert "abandoned" in VALID_TRANSITIONS["in-production"]
+
+
+# ── history mode: drift after the branch is merged (FEAT-027) ─────────────── #
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _merge_feature_into_main(repo: Path, branch: str, message: str) -> None:
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "merge", "--no-ff", branch, "-m", message)
+
+
+class TestHistoryMode:
+    """Once merged there is no branch diff left — and that is exactly when
+    `close --status done` runs drift, so the check used to be silent at the one
+    moment it fires."""
+
+    def test_merged_feature_is_still_assessed(self, repo: Path) -> None:
+        (repo / "shipped.py").write_text("def shipped_helper():\n    return 1\n")
+        spec = _spec(repo, "- **AC1** — `shipped_helper()` exists.\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "feat: build the thing (FEAT-001)")
+        _merge_feature_into_main(repo, "feat-001/thing", "Merge FEAT-001: the thing")
+
+        report = assess(spec, repo, base="main")
+
+        assert report.mode == "history"
+        assert report.commits, "the merge commit must be found"
+        assert report.uncovered == [], "the AC's reference is in the merged diff"
+
+    def test_merged_feature_still_flags_an_unimplemented_ac(self, repo: Path) -> None:
+        """The whole point: a merged feature can still be caught drifting."""
+        (repo / "shipped.py").write_text("def shipped_helper():\n    return 1\n")
+        spec = _spec(
+            repo,
+            "- **AC1** — `shipped_helper()` exists.\n"
+            "- **AC2** — `never_written()` also exists.\n",
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "feat: build the thing (FEAT-001)")
+        _merge_feature_into_main(repo, "feat-001/thing", "Merge FEAT-001: the thing")
+
+        report = assess(spec, repo, base="main")
+
+        assert [c.id for c in report.uncovered] == ["AC2"]
+
+    def test_squash_merge_is_found_by_the_message(self, repo: Path) -> None:
+        """No merge commit exists — the feature ID in the subject is the signal."""
+        _git(repo, "checkout", "-q", "main")
+        (repo / "shipped.py").write_text("def shipped_helper():\n    return 1\n")
+        spec = _spec(repo, "- **AC1** — `shipped_helper()` exists.\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "feat: squashed work for FEAT-001")
+
+        report = assess(spec, repo, base="main")
+
+        assert report.mode == "history"
+        assert report.uncovered == []
+
+    def test_nothing_anywhere_is_reported_as_nothing(self, repo: Path) -> None:
+        """Not a clean bill of health — an empty search must not read as a pass."""
+        _git(repo, "checkout", "-q", "main")
+        spec = _spec(repo, "- **AC1** — `never_written()` exists.\n")
+
+        report = assess(spec, repo, base="main")
+
+        assert report.mode == "none"
+        assert report.commits == []
+
+    def test_a_sibling_spec_cannot_satisfy_an_ac(self, repo: Path) -> None:
+        """The precision bug history mode introduced, and the reason
+        SPEC_EXCLUDES is not just this feature's own directory.
+
+        One commit that shapes several features drags every one of their specs
+        into the diff. A sibling spec quoting `never_written()` would then let
+        FEAT-001's AC match its own words through a neighbour's file — the
+        self-matching failure the original exclusion existed to prevent,
+        arriving through a different door.
+        """
+        _git(repo, "checkout", "-q", "main")
+        spec = _spec(repo, "- **AC1** — `never_written()` exists.\n")
+        sibling = repo / "specs" / "FEAT-002_other"
+        sibling.mkdir(parents=True)
+        (sibling / "spec.md").write_text(
+            "- **AC1** — depends on `never_written()` from FEAT-001.\n"
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "docs: shape FEAT-001 and FEAT-002")
+
+        report = assess(spec, repo, base="main")
+
+        assert [c.id for c in report.uncovered] == ["AC1"], (
+            "the reference exists only in a sibling spec, which is not evidence"
+        )
+
+    def test_branch_mode_still_wins_when_the_branch_has_the_work(
+        self, repo: Path
+    ) -> None:
+        """History mode is a fallback, not a replacement."""
+        (repo / "shipped.py").write_text("def shipped_helper():\n    return 1\n")
+        spec = _spec(repo, "- **AC1** — `shipped_helper()` exists.\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "feat: build the thing")
+
+        report = assess(spec, repo, base="main")
+
+        assert report.mode == "branch"
+        assert report.commits == []
+
+    def test_spec_excludes_is_what_keeps_a_sibling_spec_out(self, repo: Path) -> None:
+        """Pins the exclusion itself, not just its effect.
+
+        The test above passes for the wrong reason if the exclusion regresses —
+        an uncovered AC looks the same whether the sibling was excluded or the
+        search found nothing. This compares the two exclusion sets on the same
+        history, so only the widening can make it pass.
+        """
+        from meridian.drift import SPEC_EXCLUDES, history_diff
+
+        _git(repo, "checkout", "-q", "main")
+        _spec(repo, "- **AC1** — `never_written()` exists.\n")
+        sibling = repo / "specs" / "FEAT-002_other"
+        sibling.mkdir(parents=True)
+        (sibling / "spec.md").write_text("mentions `never_written()` in passing\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "docs: shape FEAT-001 and FEAT-002")
+
+        own_dir_only, _, _ = history_diff(
+            repo, "FEAT-001", "main", ["specs/FEAT-001_thing"]
+        )
+        all_specs, _, _ = history_diff(repo, "FEAT-001", "main", list(SPEC_EXCLUDES))
+
+        assert "never_written()" in own_dir_only, "precondition: the leak is real"
+        assert "never_written()" not in all_specs

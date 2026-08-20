@@ -1574,42 +1574,50 @@ def _render_drift(report, *, verbose: bool = True) -> int:
         )
         return 0
 
-    if not report.changed_files:
+    from meridian.drift import MODE_HISTORY, MODE_NONE
+
+    if report.mode == MODE_NONE or not report.changed_files:
+        # Not a clean bill of health — say which of the two searches came back
+        # empty, so the answer is actionable rather than merely negative.
         console.print(
-            f"  [yellow]⚠[/yellow]  No changes against [bold]{report.base}[/bold] — "
-            "nothing to compare the criteria to."
+            f"  [yellow]⚠[/yellow]  Nothing to compare {report.feat_id}'s criteria to: "
+            f"no diff against [bold]{report.base}[/bold], and no commits in its history "
+            f"name {report.feat_id}."
+        )
+        console.print(
+            "  [dim]Either the work is not built yet, or its commits never mention the "
+            "feature ID — Meridian's convention is a `feat-NNN/slug` branch and a "
+            "`FEAT-NNN` in the message.[/dim]"
         )
         return 0
 
-    if not report.on_feature_branch:
-        # Comparing one feature's criteria against another feature's diff
-        # produces confident nonsense, so refuse rather than mislead.
+    # FEAT-027: a merged feature has no branch diff left, which used to make the
+    # check silent at exactly the moment `close --status done` runs it. The
+    # comparison now falls back to the commits that built the feature.
+    if report.mode == MODE_HISTORY:
         console.print(
-            f"  [yellow]⚠[/yellow]  Current branch is [bold]{report.branch}[/bold], "
-            f"which does not look like {report.feat_id}'s branch."
+            f"  [dim]Merged already — comparing against the {len(report.commits)} "
+            f"commit(s) in {report.base} that built {report.feat_id}.[/dim]"
         )
-        console.print(
-            f"  [dim]Check out the branch that built {report.feat_id} — comparing its "
-            "criteria against unrelated changes says nothing.[/dim]"
-        )
-        return 0
 
+    source = "the diff" if report.mode != MODE_HISTORY else "those commits"
     uncovered = report.uncovered
     checkable = report.checkable
 
     if uncovered:
         console.print(
             f"  [yellow]⚠[/yellow]  {len(uncovered)} of {len(checkable)} checkable "
-            f"criteria name nothing found in this branch's diff:"
+            f"criteria name nothing found in {source}:"
         )
         for criterion in uncovered:
             refs = ", ".join(f"[cyan]{r}[/cyan]" for r in criterion.refs)
             console.print(f"     [bold]{criterion.id}[/bold]  {criterion.text[:88]}")
             console.print(f"        [dim]looked for:[/dim] {refs}")
     else:
+        touched = "this branch touched" if report.mode != MODE_HISTORY else "those commits touched"
         console.print(
             f"  [green]✓[/green] All {len(checkable)} checkable criteria reference "
-            f"something this branch touched."
+            f"something {touched}."
         )
 
     if verbose and report.unjudgeable:
