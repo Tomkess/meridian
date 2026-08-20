@@ -100,6 +100,42 @@ Score each output: ✅ must-have present · ⚠️ should-have missing · ❌ mu
 |---|---|---|
 | S1 | Confidence bump suggestion if low+large | |
 
+#### `/research` — citation discipline (FEAT-025)
+
+**Regression-critical behaviour: it cites rather than asserts, and an uncited claim
+is labelled an inference.**
+
+This is the thing a future prompt edit would break while looking like an improvement.
+Tightening the prose, trimming the "inference" labels as clutter, or letting a
+confident summary stand without citations all read as *better writing* and are the
+exact regression. A brief whose claims cannot be traced is indistinguishable from one
+whose claims were invented, and it is read as research either way.
+
+The second half — labelling — matters more than it looks. When the corpus is thin,
+an honest brief is *mostly* inferences. That looks like the skill failing and invites
+a prompt edit to "sound more decisive". It is the corpus reporting its own state.
+
+| # | Must-have | Score |
+|---|---|---|
+| 1 | Every factual claim carries a citation `project:FEAT-NNN:source_name#chunk_idx` | |
+| 2 | Claims with no supporting chunk are labelled `*(inference — no supporting chunk)*` | |
+| 3 | Every citation in the run resolves — `meridian cite "<citation>"` exits 0 | |
+| 4 | Nothing under `summaries/` is cited (synthesis is never evidence) | |
+| 5 | The brief is written to `summaries/research-YYYY-MM-DD.md`, not only printed | |
+| 6 | The spec's `briefs:` frontmatter records the written brief | |
+
+| # | Should-have | Score |
+|---|---|---|
+| S1 | Two citations are spot-checked with `meridian cite` before the brief is written | |
+| S2 | A mostly-inference brief declines the confidence bump rather than padding | |
+
+**Capture status:** the committed `runs/research_feat-902.md` predates FEAT-025 and
+cites bare source names (`[watchfiles_notes]`), which do not resolve. It needs a
+re-capture with `scripts/run_golden.sh research` — that requires Ollama and the
+`claude` CLI, and it enriches a corpus, so it was not run inside the FEAT-025 change.
+Until then, `tests/test_research_persistence.py` guards the prompt contract and the
+format of any citation that does appear in a captured run; the run itself is stale.
+
 ---
 
 ### `/vision` on the golden project (write-side, destructive)
@@ -200,6 +236,8 @@ Capturing this needs a real paper added to `tests/golden/research_assets/`.
 | 2 | Fits one A4 page when rendered | |
 | 3 | Claims are attributable to the source, not the model's prior knowledge | |
 | 4 | Written to `summaries/`, not to the spec body | |
+| 5 | Each finding carries a resolvable citation; uncited lines say `*(inference …)*` | |
+| 6 | The spec's `briefs:` frontmatter records the written brief | |
 
 ---
 

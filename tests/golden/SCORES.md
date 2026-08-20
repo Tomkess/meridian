@@ -73,6 +73,14 @@ FEAT-904 is the task-less target so this is a genuine generation.
 | 3 | Next actions ≥ 2 | ✅ (4 items) |
 | S1 | Confidence bump if low+large | ✅ correct judgment — declined, held `medium` (single source) |
 
+**Stale as of FEAT-025 (2026-08-20).** This capture predates resolvable citations. It
+cites bare source names (`[watchfiles_notes]`), writes no file, and labels no
+inferences — so it scores ❌ on all six must-haves of the new "citation discipline"
+section in the rubric. Re-capture with `scripts/run_golden.sh research` (needs Ollama
++ the `claude` CLI; it enriches a corpus, which is why it was not run as part of the
+FEAT-025 change) and re-score before the next release. Until then the guard is
+`tests/test_research_persistence.py`, which holds the prompt contract, not the output.
+
 ---
 
 ## Resolved follow-ups (2026-07-14)

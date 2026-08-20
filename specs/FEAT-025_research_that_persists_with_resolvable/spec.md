@@ -149,3 +149,51 @@ signal is the correct one.
 Round-trip: a citation produced by `meridian search` resolves through
 `meridian cite` to the same text. And a file dropped in `summaries/` must produce
 zero chunks after a full rebuild — the loop test.
+
+### Result — 2026-08-20, branch `feat-025/citations`
+
+Gate: **753 passed**, `ruff check .` clean, `mypy meridian/` clean
+(`uv run --locked` for all three). 95 of those tests are new.
+
+| AC | State | Where |
+|---|---|---|
+| AC1 | **partial — wiring deferred** | `citations.format_citation()` builds the string from a search-result row; emitting it in `meridian search` output is left to the integrator (see below) |
+| AC2 | done | `meridian cite <citation>` prints chunk text + source path |
+| AC3 | done | missing chunk → `CitationMissingError`, exit 1 |
+| AC4 | done | foreign citation resolves via `registry.find_project()`; untracked and path-gone are separate errors from "chunk missing" |
+| AC5–AC9 | done in prompt | `research.md` / `brief.md`; guarded by `tests/test_research_persistence.py` |
+| AC10 | done | `tests/test_loop_prevention.py` — file in `summaries/` yields zero chunks after `reindex_all` |
+| AC11 | done | reason recorded on `enrich.SYNTHESIS_DIRS`; a test asserts the reason is *there* |
+| AC12 | done | test asserts no CLI flag, no `reindex_all` parameter, and no config key can opt in |
+| AC13 | done | `TestRoundTrip` — search hit → citation → parse → resolve → same text |
+| AC14 | **partial — capture is stale** | rubric section written; the committed run predates this change |
+
+**AC1 — what is left for the integrator.** `meridian/search.py` and the `search`
+command were owned by a parallel agent restructuring result rendering, so nothing
+in either was touched. To finish AC1: call
+`citations.format_citation(r)` per result and add the string as a `citation` field
+in the `--json` payload and as a column or dim suffix in the table. Both skills
+already read `citation` when present and fall back to assembling the four identity
+fields, so they work either way.
+
+**AC14 — why the capture is stale.** A real capture runs `scripts/run_golden.sh
+research`, which enriches a corpus and needs Ollama plus the `claude` CLI. Running
+`meridian enrich` was ruled out for this change, so the committed
+`tests/golden/runs/research_feat-902.md` still predates resolvable citations — it
+cites bare source names and labels no inferences. What exists instead: a
+"citation discipline" section in `RUBRIC.md` naming the regression-critical
+behaviour (*cites rather than asserts; uncited claims are labelled inferences*), a
+stale-capture note in `SCORES.md`, prompt-contract tests that fail if a future edit
+drops the citation rule or the inference label, and a test that parses every
+citation-shaped string in every captured run so the next capture is checked. That
+is weaker than a captured run, exactly as this spec's Key Risks predicted.
+
+**One thing beyond the letter of the ACs.** `enrich` now refuses a source whose path
+lies inside a `summaries/` directory. AC10–AC12 only cover the rebuild path, but
+`reindex_all` cannot reach `summaries/` at all — pointing `enrich` at a brief is the
+one realistic way the loop actually gets built, so it is closed at that door too.
+
+**Note on the base.** This branched before FEAT-023 merged, so `enrich.py` here still
+has the six-column schema and `_is_legacy_schema`. Nothing in `citations.py` depends
+on either: a chunk is identified by `(project, feat_id, source_name, chunk_idx)`,
+which both schema generations carry.
