@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.2 — 2026-08-20
+
+- fix: an empty remote is skipped, not reported as failed
+- docs: write the v0.6.1 changelog section
+
 ## 0.6.1 — 2026-08-20
 
 ### Fixed
