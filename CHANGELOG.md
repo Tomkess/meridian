@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 — 2026-08-20
+
+- chore: close FEAT-023, 024, 025, 026 as done
+- feat: wire citations into search output and document the wave
+- feat(FEAT-025): resolvable citations and research that persists
+- feat(search): cross-project prior art as a separate section (FEAT-024)
+- feat(FEAT-023): incremental, deduplicated ingestion
+- docs: document meridian next and the portfolio signals
+- feat(FEAT-026): rank work across projects instead of tallying it
+- fix: judge STEERING.md by its prose, not its comment count
+- docs: shape goal-01 and four features for the differentiators
+- docs: write the v0.5.0 changelog section
+
 ## 0.5.0 — 2026-08-19
 
 Clears the post-audit backlog. The riskiest code in the project — the part that
