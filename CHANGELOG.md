@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1 — 2026-08-20
+
+- feat: drift detection that survives the merge (FEAT-027)
+- docs: write the v0.6.0 changelog section
+
 ## 0.6.0 — 2026-08-20
 
 Invests in the two capabilities nothing else offers — the spec-bound research
