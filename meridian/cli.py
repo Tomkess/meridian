@@ -953,9 +953,16 @@ def _resolve_capture(latest_screenshot_flag: bool, from_clipboard: bool) -> str:
 @app.command()
 def enrich(
     feature_id: str = typer.Argument(..., help="Feature ID (e.g. feat-007)"),
-    source: str | None = typer.Argument(
+    sources: list[str] = typer.Argument(
         None,
-        help="Path to PDF/text/image file or URL (omit when using a capture flag)",
+        help=(
+            "One or more PDF/text/image paths, URLs, or a directory of them "
+            "(omit when using a capture flag)"
+        ),
+    ),
+    refresh: bool = typer.Option(
+        False, "--refresh",
+        help="Re-fetch URL sources already saved in sources/ (re-embeds only if the text changed)",
     ),
     note: str | None = typer.Option(
         None, "--note", "-n",
@@ -978,20 +985,27 @@ def enrich(
         help="Fallback: describe the image with the configured Ollama vision model",
     ),
 ):
-    """Ingest a PDF, URL, text file, or annotated screenshot into a feature's research corpus."""
-    from meridian.enrich import enrich_feature, ingest_screenshot, is_image_source
+    """Ingest PDFs, URLs, text files, or an annotated screenshot into a feature's research corpus."""
+    from meridian.enrich import (
+        enrich_feature,
+        expand_sources,
+        ingest_screenshot,
+        is_image_source,
+    )
+
+    given = list(sources or [])
 
     # ── Argument validation, before touching disk ───────────────────────────
     if latest_screenshot and from_clipboard:
         console.print("[red]Error:[/red] --latest-screenshot and --from-clipboard are mutually exclusive.")
         raise typer.Exit(1)
-    if (latest_screenshot or from_clipboard) and source:
+    if (latest_screenshot or from_clipboard) and given:
         flag = "--latest-screenshot" if latest_screenshot else "--from-clipboard"
         console.print(
             f"[red]Error:[/red] pass either a source path or {flag}, not both."
         )
         raise typer.Exit(1)
-    if not source and not (latest_screenshot or from_clipboard):
+    if not given and not (latest_screenshot or from_clipboard):
         console.print(
             "[red]Error:[/red] give a source (PDF/URL/text/image path) or use "
             "--latest-screenshot / --from-clipboard."
@@ -1006,31 +1020,61 @@ def enrich(
     # ── Capture ────────────────────────────────────────────────────────────
     if latest_screenshot or from_clipboard:
         try:
-            source = _resolve_capture(latest_screenshot, from_clipboard)
+            given = [_resolve_capture(latest_screenshot, from_clipboard)]
         except RuntimeError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(1)
 
-    assert source is not None  # validation above guarantees this
+    targets, expand_failures = expand_sources(given)
+    for argument, reason in expand_failures:
+        console.print(f"[red]✗[/red] [bold]{argument}[/bold] — {reason}")
+    if not targets:
+        raise typer.Exit(1)
 
     # ── Non-image sources keep the original path, untouched ────────────────
-    if not is_image_source(source):
+    if not (len(targets) == 1 and is_image_source(targets[0])):
         if note or note_file or vision:
             console.print(
                 "[yellow]⚠[/yellow]  --note/--note-file/--vision apply to images only — "
                 "ignored for this source."
             )
-        with console.status(f"Extracting and embedding [bold]{source}[/bold]…"):
+        failures = len(expand_failures)
+        ingested = skipped = 0
+        for target in targets:
+            # Per-source atomicity (AC13): each source is fully embedded before
+            # its own rows are written, and a failure here costs only itself —
+            # the sources already ingested in this run keep their chunks.
+            if is_image_source(target):
+                _report_source_failure(
+                    target,
+                    "an image needs notes — ingest it on its own with --note",
+                    single=len(targets) == 1,
+                )
+                failures += 1
+                continue
             try:
-                result = enrich_feature(cfg, feature_id, source)
-            except FileNotFoundError as e:
-                console.print(f"[red]Error:[/red] {e}")
-                raise typer.Exit(1)
-            except RuntimeError as e:
-                console.print(f"[red]Error:[/red] {e}")
-                raise typer.Exit(1)
-        _report_enrich(result)
+                with console.status(f"Extracting and embedding [bold]{target}[/bold]…"):
+                    result = enrich_feature(cfg, feature_id, target, refresh=refresh)
+            except (FileNotFoundError, RuntimeError) as e:
+                _report_source_failure(target, str(e), single=len(targets) == 1)
+                failures += 1
+                continue
+            _report_enrich(result)
+            skipped += 1 if result.get("skipped") else 0
+            ingested += 0 if result.get("skipped") else 1
+
+        if len(targets) > 1 or expand_failures:
+            parts = [f"[bold]{ingested}[/bold] ingested"]
+            if skipped:
+                parts.append(f"[bold]{skipped}[/bold] unchanged")
+            if failures:
+                parts.append(f"[bold]{failures}[/bold] failed")
+            console.print("[dim]" + " · ".join(parts) + "[/dim]")
+        if failures:
+            raise typer.Exit(1)
         return
+
+    source = targets[0]
 
     # ── Screenshot path: notes are mandatory ───────────────────────────────
     if note is None and note_file is None:
@@ -1065,23 +1109,50 @@ def enrich(
     _report_enrich(result)
 
 
+def _report_source_failure(target: str, message: str, *, single: bool) -> None:
+    """Print one source's failure.
+
+    A single source keeps the original ``Error:`` shape — skills and scripts
+    read it. In a batch the source name has to lead instead: *which* of the
+    twenty failed is the entire question (AC14).
+    """
+    if single:
+        console.print(f"[red]Error:[/red] {message}")
+        return
+    first_line = message.strip().splitlines()[0] if message.strip() else "failed"
+    console.print(f"[red]✗[/red] [bold]{Path(target).name}[/bold] — {first_line}")
+
+
 def _report_enrich(result: dict) -> None:
-    """Print the success (or 0-chunk) line for either enrich path."""
+    """Print the success (or skipped / 0-chunk) line for either enrich path."""
     chunks = result["chunks"]
     target = result["source"]
     if result.get("sidecar"):
         target = f"{result['source']} + {result['sidecar']}"
     described = f" · described by {result['described_by']}" if result.get("described_by") else ""
 
-    if chunks == 0:
+    if result.get("skipped"):
+        console.print(
+            f"[dim]↷[/dim] [bold]{result['feat_id']}[/bold] ← {target} "
+            f"([dim]{result.get('reason', 'unchanged')} — nothing re-embedded[/dim])"
+        )
+    elif chunks == 0:
         console.print(
             f"[yellow]⚠[/yellow]  [bold]{result['feat_id']}[/bold] ← {target} "
             f"([dim]0 chunks — source may be too short or empty[/dim])"
         )
     else:
+        # "reused" says the vector was already in the index for this text and
+        # this model — the dedup that keeps a shared paper from being embedded
+        # once per feature.
+        reused = result.get("reused") or 0
+        detail = (
+            f"{chunks} chunks · {result.get('embedded', chunks)} embedded, {reused} reused"
+            if reused else f"{chunks} chunks embedded"
+        )
         console.print(
             f"[green]✓[/green] [bold]{result['feat_id']}[/bold] ← {target} "
-            f"([dim]{chunks} chunks embedded{described}[/dim])"
+            f"([dim]{detail}{described}[/dim])"
         )
 
 
@@ -1195,14 +1266,38 @@ def index(
     if not vectors_only:
         rebuild_registry(cfg.specs_path)
         console.print("[green]✓[/green] REGISTRY.md rebuilt.")
-    with console.status("Re-embedding all sources…"):
+    with console.status("Embedding what changed…"):
         try:
             result = reindex_all(cfg)
+            if result.get("migration") == "backfilled":
+                # AC11: say what the migration cost, rather than silently
+                # taking ten minutes and looking like a hung command.
+                console.print(
+                    "[yellow]⚠[/yellow]  The index predates content hashing and was "
+                    f"migrated in place — [bold]{result['embedded']}[/bold] chunks were "
+                    "re-embedded once to backfill it. No rows were deleted, and the "
+                    "next rebuild will skip everything that has not changed."
+                )
             console.print(
                 f"[green]✓[/green] Index rebuilt for [bold]{cfg.project}[/bold] — "
                 f"[bold]{result['sources']}[/bold] sources, "
                 f"[bold]{result['chunks']}[/bold] chunks."
             )
+            # AC4: the two numbers that say what this rebuild actually cost.
+            console.print(
+                f"  [dim]{result['skipped']} sources unchanged and skipped "
+                f"({result['skipped_chunks']} chunks) · "
+                f"{result['embedded']} chunks embedded · "
+                f"{result['reused']} reused from the index.[/dim]"
+            )
+            changed = result.get("changed") or []
+            if changed:
+                shown = ", ".join(changed[:3]) + (" …" if len(changed) > 3 else "")
+                console.print(
+                    f"  [dim]{len(changed)} source(s) changed and were re-embedded: "
+                    f"{shown}. If you did not edit them, their text extraction may not "
+                    f"be deterministic.[/dim]"
+                )
             if result.get("migrated"):
                 console.print(
                     "[yellow]⚠[/yellow]  The old index had no project column and was "

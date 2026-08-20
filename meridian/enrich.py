@@ -3,10 +3,14 @@ Research ingestion pipeline: source → extract → chunk → embed → LanceDB.
 """
 import base64
 import datetime
+import hashlib
 import logging
 import re
 import shutil
 import sys
+from collections import defaultdict
+from collections.abc import Iterator
+from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -77,6 +81,38 @@ def slug_image_name(name: str) -> str:
     words = [w for w in re.split(r"[^a-z0-9]+", stem) if w and w != "at"]
     slug = "-".join(words).strip("-")
     return f"{slug or 'image'}{suffix}"
+
+
+# FEAT-023: what a *directory* argument expands to. Narrow on purpose — these
+# are the suffixes extract_text() handles as prose.
+INGESTIBLE_SUFFIXES = frozenset({".pdf", ".txt", ".md"})
+
+
+def expand_sources(sources: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Expand directory arguments into the files inside them → ``(targets, failures)``.
+
+    Each failure is ``(argument, reason)``.
+
+    Non-recursive (AC12): recursion into a repo tree is how you accidentally
+    index `node_modules`. Images are left out because an image without notes is
+    not searchable — ingesting one stays a deliberate, one-at-a-time act with
+    `--note`.
+    """
+    targets: list[str] = []
+    failures: list[tuple[str, str]] = []
+    for source in sources:
+        path = Path(source).expanduser()
+        if _is_url(source) or not path.is_dir():
+            targets.append(source)
+            continue
+        files = sorted(
+            p for p in path.iterdir()
+            if p.is_file() and p.suffix.lower() in INGESTIBLE_SUFFIXES
+        )
+        if not files:
+            failures.append((source, "no .pdf/.txt/.md files in this directory"))
+        targets.extend(str(p) for p in files)
+    return targets, failures
 
 
 def _extract_pdf(path: Path) -> str:
@@ -165,6 +201,23 @@ def chunk_text(text: str, max_words: int = 200, overlap: int = 25) -> list[str]:
             chunks.append(chunk)
         start += max_words - overlap
     return chunks
+
+
+# ─── Content addressing (FEAT-023) ────────────────────────────────────────── #
+
+def hash_chunk(text: str) -> str:
+    """SHA-256 of a chunk's text — the identity used for skipping and dedup.
+
+    Hash, never mtime (AC3). A file touched but not edited hashes the same and
+    must not be re-embedded; a file edited in place with a preserved mtime
+    hashes differently and must be. The hash is also what makes the same text
+    embedded in two features cost one Ollama call instead of two.
+
+    The hash covers the *chunk*, not the file, because the chunk is what is
+    embedded — so a one-paragraph edit re-embeds the chunks that changed and
+    reuses the rest.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 # ─── Ollama embeddings ────────────────────────────────────────────────────── #
@@ -272,15 +325,77 @@ def _sql_quote(value: str) -> str:
     return value.replace("'", "''")
 
 
-def _is_legacy_schema(table) -> bool:
-    """True when the table predates the `project` column.
+CONTENT_HASH = "content_hash"
+EMBEDDING_MODEL = "embedding_model"
+
+
+class SchemaGeneration(StrEnum):
+    """Which generation of the `chunks` schema wrote a table.
+
+    There are three now, so a boolean cannot say what was found — and the
+    answer decides between "raise", "migrate in place" and "use as is":
+
+    ===============  ==============================  ==========================
+    generation       columns                          handling
+    ===============  ==============================  ==========================
+    PRE_PROJECT      no `project`                     LegacyIndexError; only
+                                                      `reindex_all` recreates
+    PRE_HASH         `project`, no `content_hash`     migrated in place, rows
+                                                      kept (FEAT-023 AC9)
+    CURRENT          both, plus `embedding_model`     nothing to do
+    ===============  ==============================  ==========================
 
     Detected by inspecting schema field names rather than by catching a write
     failure: LanceDB's schema-evolution APIs drift across minor versions, but
     `table.schema` is stable across the range pinned by the FEAT-005
     dependency-bounds test.
     """
-    return "project" not in set(table.schema.names)
+
+    PRE_PROJECT = "pre-project"
+    PRE_HASH = "pre-hash"
+    CURRENT = "current"
+
+
+def schema_generation(table) -> SchemaGeneration:
+    """Name the schema generation of an open `chunks` table."""
+    names = set(table.schema.names)
+    if "project" not in names:
+        return SchemaGeneration.PRE_PROJECT
+    if CONTENT_HASH not in names or EMBEDDING_MODEL not in names:
+        return SchemaGeneration.PRE_HASH
+    return SchemaGeneration.CURRENT
+
+
+def _add_hash_columns(table) -> None:
+    """Add the FEAT-023 columns to a FEAT-007-era table. Additive, never destructive.
+
+    This is the whole migration: existing rows keep their vectors and get an
+    empty hash, which reads as *unknown* (re-embed once, then backfill) rather
+    than *stale* (delete). Nothing is dropped, so an index shared by five repos
+    stays readable by every one of them, including the ones still running the
+    old Meridian.
+
+    The alternative — drop and rebuild — is exactly what `_is_legacy_schema`
+    did for the pre-FEAT-007 schema, and on 2026-08-18 it destroyed the shared
+    global store because one repo happened to run `meridian index` first. A new
+    column must never reach for that hammer.
+    """
+    missing = {
+        name: "''"
+        for name in (CONTENT_HASH, EMBEDDING_MODEL)
+        if name not in set(table.schema.names)
+    }
+    if not missing:
+        return
+    try:
+        table.add_columns(missing)
+    except Exception as e:  # pragma: no cover - lancedb API drift
+        raise RuntimeError(
+            f"Could not add the content-hash columns to the existing index ({e}).\n"
+            "The index was left untouched — no rows were deleted, and search "
+            "still works.\n"
+            "Update the dependencies (`uv sync`) and run `meridian index` again."
+        ) from e
 
 
 def _open_table(lancedb_path: Path, dim: int):
@@ -293,8 +408,13 @@ def _open_table(lancedb_path: Path, dim: int):
 
     if "chunks" in db.table_names():
         table = db.open_table("chunks")
-        if _is_legacy_schema(table):
+        generation = schema_generation(table)
+        if generation is SchemaGeneration.PRE_PROJECT:
             raise LegacyIndexError()
+        if generation is SchemaGeneration.PRE_HASH:
+            # Migrate on the write path too, so `meridian enrich` works on an
+            # old store without waiting for a full `meridian index`.
+            _add_hash_columns(table)
         return table
 
     schema = pa.schema([
@@ -307,8 +427,181 @@ def _open_table(lancedb_path: Path, dim: int):
         pa.field("chunk_idx", pa.int32()),
         pa.field("text", pa.string()),
         pa.field("vector", pa.list_(pa.float32(), dim)),
+        # FEAT-023. Trailing on purpose: `_add_hash_columns` appends, so a
+        # migrated table and a fresh one end up with the same field order.
+        pa.field(CONTENT_HASH, pa.string()),
+        pa.field(EMBEDDING_MODEL, pa.string()),
     ])
     return db.create_table("chunks", schema=schema)
+
+
+def _open_existing_table(lancedb_path: Path):
+    """Open the `chunks` table for reading → ``(table | None, generation | None)``.
+
+    Never creates and never migrates: `reindex_all` has to inspect the store
+    *before* it embeds anything, and a read must not be the thing that changes
+    the schema.
+    """
+    _require_lancedb_compat()
+    import lancedb
+
+    if not lancedb_path.exists():
+        return None, None
+    db = lancedb.connect(str(lancedb_path))
+    if "chunks" not in db.table_names():
+        return None, None
+    table = db.open_table("chunks")
+    return table, schema_generation(table)
+
+
+def _scan(table, columns: list[str], predicate: str | None = None,
+          limit: int | None = None) -> list[dict]:
+    """Filtered, projected scan — with an explicit limit, always.
+
+    LanceDB applies a default limit of **10** to any query that does not set
+    one. `to_arrow()` reported 10 rows for a 178-row table while the 2026-08-18
+    incident was being diagnosed, and was read as data loss. Every scan here
+    passes a bound derived from `count_rows()`, and every column list omits
+    `text`/`vector` unless the caller actually needs them.
+    """
+    bound = limit if limit is not None else max(table.count_rows(), 1)
+    query = table.search()
+    if predicate:
+        query = query.where(predicate)
+    return query.select(columns).limit(bound).to_list()
+
+
+def _source_predicate(project: str, feat_id: str, source_name: str) -> str:
+    return (
+        f"project = '{_sql_quote(project)}' "
+        f"AND feat_id = '{_sql_quote(feat_id)}' "
+        f"AND source_name = '{_sql_quote(source_name)}'"
+    )
+
+
+def _stored_chunks(table, project: str) -> dict[tuple[str, str], list[tuple[int, str, str]]]:
+    """``(feat_id, source_name) → [(chunk_idx, content_hash, embedding_model)]``.
+
+    Reads neither text nor vectors, so the cost is independent of the embedding
+    dimension — this runs before every rebuild. A PRE_HASH table has no hash
+    columns to read, so every source comes back *unknown* and is re-embedded
+    once, which is the migration (AC9).
+    """
+    names = set(table.schema.names)
+    columns = ["feat_id", "source_name", "chunk_idx"]
+    if CONTENT_HASH in names and EMBEDDING_MODEL in names:
+        columns += [CONTENT_HASH, EMBEDDING_MODEL]
+    index: dict[tuple[str, str], list[tuple[int, str, str]]] = defaultdict(list)
+    for row in _scan(table, columns, f"project = '{_sql_quote(project)}'"):
+        index[(row["feat_id"], row["source_name"])].append((
+            int(row["chunk_idx"]),
+            row.get(CONTENT_HASH) or "",
+            row.get(EMBEDDING_MODEL) or "",
+        ))
+    for entries in index.values():
+        entries.sort()
+    return dict(index)
+
+
+def _stored_source_chunks(
+    table, project: str, feat_id: str, source_name: str
+) -> list[tuple[int, str, str]] | None:
+    """One source's stored ``(chunk_idx, hash, model)`` rows — None when unknown.
+
+    The single-source counterpart of :func:`_stored_chunks`, so `enrich` scans
+    one predicate instead of the project's whole slice.
+    """
+    if table is None or schema_generation(table) is not SchemaGeneration.CURRENT:
+        return None
+    rows = _scan(
+        table,
+        ["chunk_idx", CONTENT_HASH, EMBEDDING_MODEL],
+        _source_predicate(project, feat_id, source_name),
+    )
+    if not rows:
+        return None
+    return sorted(
+        (int(r["chunk_idx"]), r.get(CONTENT_HASH) or "", r.get(EMBEDDING_MODEL) or "")
+        for r in rows
+    )
+
+
+def _source_is_unchanged(
+    stored: list[tuple[int, str, str]] | None,
+    hashes: list[str],
+    model: str,
+) -> bool:
+    """True when the store already holds exactly these chunks, from this model.
+
+    Conservative by construction: anything unrecognised — no rows, a different
+    chunk count, an empty hash left by the migration, a vector from another
+    embedding model (AC7) — answers False and costs one re-embed, never a wrong
+    reuse.
+    """
+    if not hashes or not stored or len(stored) != len(hashes):
+        return False
+    return all(
+        idx == i and stored_hash == hashes[i] and stored_model == model
+        for i, (idx, stored_hash, stored_model) in enumerate(stored)
+    )
+
+
+class _VectorReuse:
+    """A hash → vector cache for one embedding model.
+
+    Scoped by model on purpose (AC7): vectors from two models are not
+    comparable, so reusing one for the other would silently poison every later
+    search with distances computed across incompatible spaces. The model name
+    is stored beside the hash, so the scoping survives a restart.
+
+    Serves both wastes the corpus was paying: the same chunk twice in one run
+    (in-memory hit) and the same chunk already in the store from an earlier run
+    or another feature (primed hit).
+    """
+
+    # Keep the generated `IN (...)` predicate a sane length.
+    _BATCH = 100
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.embedded = 0
+        self.reused = 0
+        self._by_hash: dict[str, list[float]] = {}
+
+    def prime(self, table, hashes: list[str]) -> None:
+        """Load any vector the store already holds for these hashes."""
+        if table is None or not hashes:
+            return
+        names = set(table.schema.names)
+        if CONTENT_HASH not in names or EMBEDDING_MODEL not in names:
+            return  # PRE_HASH store: nothing is addressable yet
+        wanted = [h for h in dict.fromkeys(hashes) if h not in self._by_hash]
+        bound = max(table.count_rows(), 1)
+        for start in range(0, len(wanted), self._BATCH):
+            batch = wanted[start:start + self._BATCH]
+            quoted = ", ".join(f"'{_sql_quote(h)}'" for h in batch)
+            predicate = (
+                f"{EMBEDDING_MODEL} = '{_sql_quote(self.model)}' "
+                f"AND {CONTENT_HASH} IN ({quoted})"
+            )
+            for row in _scan(table, [CONTENT_HASH, "vector"], predicate, limit=bound):
+                digest = row.get(CONTENT_HASH)
+                if digest and digest not in self._by_hash:
+                    self._by_hash[digest] = [float(v) for v in row["vector"]]
+
+    def vectors_for(self, chunks: list[str], hashes: list[str]) -> list[list[float]]:
+        """Vectors for these chunks, calling Ollama only for the ones not seen."""
+        vectors: list[list[float]] = []
+        for chunk, digest in zip(chunks, hashes):
+            vector = self._by_hash.get(digest)
+            if vector is None:
+                vector = [float(v) for v in embed(chunk, model=self.model)]
+                self._by_hash[digest] = vector
+                self.embedded += 1
+            else:
+                self.reused += 1
+            vectors.append(vector)
+        return vectors
 
 
 def upsert_chunks(
@@ -318,20 +611,24 @@ def upsert_chunks(
     source_name: str,
     chunks: list[str],
     vectors: list[list[float]],
+    embedding_model: str = "",
+    hashes: list[str] | None = None,
 ) -> None:
+    """Replace this source's rows with the given chunks.
+
+    ``embedding_model`` and ``hashes`` are what make the next rebuild
+    incremental. A row written without them is not wrong, only unrecognisable:
+    it will be re-embedded once, exactly like a migrated row.
+    """
     if not chunks:
         return
+    digests = hashes if hashes is not None else [hash_chunk(c) for c in chunks]
     table = _open_table(lancedb_path, len(vectors[0]))
     # Remove stale entries for this source before re-adding. Scoped to the
     # project: without it, the same FEAT id plus the same filename in another
     # repo — FEAT-001 + notes.md is entirely likely — deletes that repo's rows.
-    predicate = (
-        f"project = '{_sql_quote(project)}' "
-        f"AND feat_id = '{_sql_quote(feat_id)}' "
-        f"AND source_name = '{_sql_quote(source_name)}'"
-    )
     try:
-        table.delete(predicate)
+        table.delete(_source_predicate(project, feat_id, source_name))
     except Exception as e:
         # FEAT-018: not silent. A failed delete leaves duplicate rows, which
         # quietly degrades every later search — the exact thing the corpus exists
@@ -345,8 +642,13 @@ def upsert_chunks(
             "chunk_idx": i,
             "text": chunk,
             "vector": [float(v) for v in vec],
+            # FEAT-023: provenance stays one row per (project, feat, source,
+            # chunk) — the hash removes the *embedding* cost of duplication,
+            # never the record of where the text came from (AC8).
+            CONTENT_HASH: digest,
+            EMBEDDING_MODEL: embedding_model,
         }
-        for i, (chunk, vec) in enumerate(zip(chunks, vectors))
+        for i, (chunk, vec, digest) in enumerate(zip(chunks, vectors, digests))
     ]
     table.add(rows)
 
@@ -373,7 +675,7 @@ def search_similar(
     if "chunks" not in db.table_names():
         return []
     table = db.open_table("chunks")
-    if _is_legacy_schema(table):
+    if schema_generation(table) is SchemaGeneration.PRE_PROJECT:
         raise LegacyIndexError()
 
     clauses = []
@@ -597,33 +899,86 @@ def _append_sources(spec_path: Path, refs: list[str]) -> None:
             data["sources"] = sources_list + added
 
 
-def enrich_feature(cfg: MeridianConfig, feat_id: str, source: str) -> dict:
+def enrich_feature(
+    cfg: MeridianConfig, feat_id: str, source: str, refresh: bool = False
+) -> dict:
+    """Ingest one source into a feature's corpus.
+
+    Returns ``feat_id``, ``source``, ``chunks`` (the source's chunk count),
+    ``embedded`` and ``reused`` (how those chunks were paid for), plus
+    ``skipped``/``reason`` when nothing had to be embedded.
+
+    ``refresh`` applies to URL sources only: a URL already fetched into
+    ``sources/`` is *not* re-fetched without it. The fetch is the one part of
+    ingestion that leaves the machine, and re-running a batch to pick up one new
+    paper should not re-crawl twenty sites (AC15).
+    """
     feat_id_norm = feat_id.upper()
     spec_path = _find_spec_path(cfg, feat_id_norm)
     feat_dir = spec_path.parent
 
-    # 1. Extract
+    # 1. Extract — unless this URL is already on disk and no refresh was asked for.
+    if _is_url(source):
+        cached = feat_dir / "sources" / _source_filename(source)
+        if cached.exists() and not refresh:
+            _append_sources(spec_path, [f"sources/{cached.name}"])
+            return {
+                "feat_id": feat_id_norm,
+                "source": cached.name,
+                "chunks": len(chunk_text(cached.read_text(errors="replace"))),
+                "embedded": 0,
+                "reused": 0,
+                "skipped": True,
+                "reason": "already fetched — pass --refresh to re-fetch",
+            }
     text = extract_text(source)
 
     # 2. Save source file
     filename = save_source(feat_dir, source, text)
 
-    # 3. Chunk
+    # 3. Chunk + hash
     chunks = chunk_text(text)
+    hashes = [hash_chunk(c) for c in chunks]
 
-    # 4. Embed each chunk
-    vectors = [embed(c, model=cfg.ollama_model) for c in chunks]
+    # 4. Nothing to do when the store already holds exactly these chunks.
+    table, generation = _open_existing_table(cfg.lancedb_path)
+    stored = _stored_source_chunks(table, cfg.project, feat_id_norm, filename)
+    if _source_is_unchanged(stored, hashes, cfg.ollama_model):
+        _append_sources(spec_path, [f"sources/{filename}"])
+        return {
+            "feat_id": feat_id_norm,
+            "source": filename,
+            "chunks": len(chunks),
+            "embedded": 0,
+            "reused": len(chunks),
+            "skipped": True,
+            "reason": "unchanged since the last ingest",
+        }
 
-    # 5. Store in LanceDB
-    upsert_chunks(cfg.lancedb_path, cfg.project, feat_id_norm, filename, chunks, vectors)
+    # 5. Embed what is not already embedded — the same paper in a second
+    #    feature reuses the stored vectors and still gets its own rows (AC6/AC8).
+    reuse = _VectorReuse(cfg.ollama_model)
+    if generation is SchemaGeneration.CURRENT:
+        reuse.prime(table, hashes)
+    vectors = reuse.vectors_for(chunks, hashes)
 
-    # 6. Update spec frontmatter sources list
+    # 6. Store in LanceDB
+    upsert_chunks(
+        cfg.lancedb_path, cfg.project, feat_id_norm, filename, chunks, vectors,
+        embedding_model=cfg.ollama_model, hashes=hashes,
+    )
+
+    # 7. Update spec frontmatter sources list
     _append_sources(spec_path, [f"sources/{filename}"])
 
     return {
         "feat_id": feat_id_norm,
         "source": filename,
         "chunks": len(chunks),
+        "embedded": reuse.embedded,
+        "reused": reuse.reused,
+        "skipped": False,
+        "reason": None,
     }
 
 
@@ -711,10 +1066,20 @@ def ingest_screenshot(
 
     # 4. Chunk + embed the prose (the image itself is never embedded).
     chunks = notes_chunks(sidecar_text, f"sources/{image_name}", feat_id_norm)
-    vectors = [embed(c, model=cfg.ollama_model) for c in chunks]
+    hashes = [hash_chunk(c) for c in chunks]
+    reuse = _VectorReuse(cfg.ollama_model)
+    table, generation = _open_existing_table(cfg.lancedb_path)
+    if generation is SchemaGeneration.CURRENT:
+        # Re-ingesting the same screenshot with an unchanged note is the common
+        # case here — the notes rarely move, only the surrounding spec does.
+        reuse.prime(table, hashes)
+    vectors = reuse.vectors_for(chunks, hashes)
 
     # 5. Store, keyed on the sidecar so re-ingest replaces rather than duplicates.
-    upsert_chunks(cfg.lancedb_path, cfg.project, feat_id_norm, sidecar_name, chunks, vectors)
+    upsert_chunks(
+        cfg.lancedb_path, cfg.project, feat_id_norm, sidecar_name, chunks, vectors,
+        embedding_model=cfg.ollama_model, hashes=hashes,
+    )
 
     # 6. Both the image and its notes are sources of record.
     _append_sources(spec_path, [f"sources/{image_name}", f"sources/{sidecar_name}"])
@@ -748,70 +1113,137 @@ def _sidecar_image_ref(sidecar_path: Path) -> str:
     return f"sources/{stem}"
 
 
+def _iter_source_files(specs_path: Path) -> Iterator[tuple[str, Path]]:
+    """Yield ``(feat_id, path)`` for every indexable source file under specs/.
+
+    FEAT-006: *.notes.md carries screenshot prose, so it must be rebuilt too —
+    but only that pattern. A stray README.md or summaries/ file in sources/ is
+    not research and must not be indexed.
+    """
+    for sources_dir in sorted(specs_path.glob("FEAT-*/sources")):
+        feat_id = sources_dir.parent.name.split("_")[0]
+        files = sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.notes.md"))
+        for src_file in files:
+            yield feat_id, src_file
+
+
+def _chunks_for_source(feat_id: str, src_file: Path) -> list[str]:
+    text = src_file.read_text(errors="replace")
+    if src_file.name.endswith(".notes.md"):
+        # Re-embed the stored reading; never call a describer again, so the
+        # chunk count and the sidecar bytes stay stable across rebuilds.
+        return notes_chunks(text, _sidecar_image_ref(src_file), feat_id)
+    return chunk_text(text)
+
+
 def reindex_all(cfg: MeridianConfig) -> dict:
     """Rebuild *this project's* slice of the LanceDB index from its sources.
+
+    **Incremental** (FEAT-023): a source whose every chunk hash is already in
+    the store, from the same embedding model, is left exactly where it is — not
+    re-embedded, not even rewritten. A no-op rebuild makes zero Ollama calls,
+    which is what lets the corpus grow: before this, maintaining 178 chunks cost
+    178 round-trips *per rebuild*, so the hundredth document was paid for again
+    every time.
 
     Embeds everything **before** deleting anything. FEAT-013: the delete used to
     come first, so a rebuild with Ollama unreachable destroyed the project's
     whole corpus and then reported that it had not rebuilt the index — verified
-    as 4 chunks in, an error message, exit 0, 0 chunks out. Embedding first
-    means a failure leaves the existing rows untouched.
+    as 4 chunks in, an error message, exit 0, 0 chunks out. That ordering still
+    holds, and now covers the migration too (AC10).
 
-    Returns ``sources``, ``chunks``, and ``migrated`` — the last is True when a
-    pre-FEAT-007 table was recreated, which wipes other projects' rows and means
-    each of them must run `meridian index --vectors-only` once to repopulate.
+    Returns:
+      ``sources``/``chunks``  — the corpus this project now has indexed
+      ``skipped``             — sources left untouched (unchanged)
+      ``skipped_chunks``      — their chunk count
+      ``embedded``            — chunks actually sent to Ollama
+      ``reused``              — chunks whose vector came from the cache or store
+      ``changed``             — sources re-embedded because their hashes moved
+      ``migration``           — None | "backfilled" | "recreated"
+      ``migrated``            — True only for "recreated", which wipes other
+                                projects' rows and means each of them must run
+                                `meridian index --vectors-only` once to repopulate
     """
     _require_lancedb_compat()
     import lancedb
 
-    # ── 1. embed everything first; any failure raises before we touch the store
-    pending: list[tuple[str, str, list[str], list[list[float]]]] = []
-    total_chunks = 0
-    total_sources = 0
-    for sources_dir in sorted(cfg.specs_path.glob("FEAT-*/sources")):
-        feat_id = sources_dir.parent.name.split("_")[0]
-        # FEAT-006: *.notes.md carries screenshot prose, so it must be rebuilt
-        # too — but only that pattern. A stray README.md or summaries/ file in
-        # sources/ is not research and must not be indexed.
-        files = sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.notes.md"))
-        for src_file in files:
-            text = src_file.read_text(errors="replace")
-            if src_file.name.endswith(".notes.md"):
-                # Re-embed the stored reading; never call a describer again, so
-                # the chunk count and the sidecar bytes stay stable across rebuilds.
-                chunks = notes_chunks(text, _sidecar_image_ref(src_file), feat_id)
-            else:
-                chunks = chunk_text(text)
-            vectors = [embed(c, model=cfg.ollama_model) for c in chunks]
-            pending.append((feat_id, src_file.name, chunks, vectors))
-            total_chunks += len(chunks)
-            total_sources += 1
+    table, generation = _open_existing_table(cfg.lancedb_path)
+    # A pre-FEAT-007 table carries no project on any row, so nothing in it can
+    # be attributed, reused, or selectively deleted.
+    recreate = generation is SchemaGeneration.PRE_PROJECT
+    stored = {} if (table is None or recreate) else _stored_chunks(table, cfg.project)
 
-    # ── 2. only now is it safe to clear the old rows
-    migrated = False
-    if cfg.lancedb_path.exists():
-        db = lancedb.connect(str(cfg.lancedb_path))
-        if "chunks" in db.table_names():
-            table = db.open_table("chunks")
-            if _is_legacy_schema(table):
-                # Pre-FEAT-007 rows carry no project, so there is no way to know
-                # which repo wrote them and no way to keep only ours. Recreating
-                # is the documented recovery path: chunks are derived data,
-                # rebuildable from each feature's sources/.
-                db.drop_table("chunks")
-                migrated = True
-            else:
-                # The whole point of FEAT-007: clear only our own rows and leave
-                # every other project's research intact.
-                try:
-                    table.delete(f"project = '{_sql_quote(cfg.project)}'")
-                except Exception as e:
-                    # Not silent: a failed delete leaves duplicate rows, which
-                    # quietly degrades every later search.
-                    logger.warning("Could not clear existing rows for %s (%s)", cfg.project, e)
+    # ── 1. chunk and hash every source; decide what actually needs embedding
+    plans: list[tuple[str, str, list[str], list[str]]] = []
+    present: set[tuple[str, str]] = set()
+    total_sources = total_chunks = skipped_sources = skipped_chunks = 0
+    changed: list[str] = []
+    for feat_id, src_file in _iter_source_files(cfg.specs_path):
+        chunks = _chunks_for_source(feat_id, src_file)
+        hashes = [hash_chunk(c) for c in chunks]
+        key = (feat_id, src_file.name)
+        present.add(key)
+        total_sources += 1
+        total_chunks += len(chunks)
+        if _source_is_unchanged(stored.get(key), hashes, cfg.ollama_model):
+            skipped_sources += 1
+            skipped_chunks += len(chunks)
+            continue
+        if key in stored:
+            changed.append(f"{feat_id}/{src_file.name}")
+        plans.append((feat_id, src_file.name, chunks, hashes))
 
-    # ── 3. write the already-computed embeddings
-    for feat_id, source_name, chunks, vectors in pending:
-        upsert_chunks(cfg.lancedb_path, cfg.project, feat_id, source_name, chunks, vectors)
+    # ── 2. embed what is left; any failure raises before we touch the store
+    reuse = _VectorReuse(cfg.ollama_model)
+    if not recreate:
+        reuse.prime(table, [h for _f, _n, _c, hs in plans for h in hs])
+    pending: list[tuple[str, str, list[str], list[str], list[list[float]]]] = [
+        (feat_id, name, chunks, hashes, reuse.vectors_for(chunks, hashes))
+        for feat_id, name, chunks, hashes in plans
+    ]
 
-    return {"sources": total_sources, "chunks": total_chunks, "migrated": migrated}
+    # ── 3. only now is it safe to change the store
+    migration: str | None = None
+    if recreate:
+        # Recreating is the documented recovery path for a pre-project table:
+        # chunks are derived data, rebuildable from each feature's sources/.
+        lancedb.connect(str(cfg.lancedb_path)).drop_table("chunks")
+        migration = "recreated"
+        table = None
+    elif generation is SchemaGeneration.PRE_HASH:
+        # Additive. Every row keeps its vector; the empty hash reads as
+        # "unknown", which is why this rebuild re-embedded the corpus once
+        # and the next one will not (AC9).
+        _add_hash_columns(table)
+        migration = "backfilled"
+
+    # Sources that no longer exist on disk lose their rows — the same clearing
+    # the old whole-project delete did, narrowed so that skipped sources keep
+    # theirs. Every remaining source is replaced by upsert_chunks below.
+    if table is not None:
+        for feat_id, source_name in sorted(set(stored) - present):
+            try:
+                table.delete(_source_predicate(cfg.project, feat_id, source_name))
+            except Exception as e:
+                # Not silent: a failed delete leaves rows for a source that no
+                # longer exists, which quietly degrades every later search.
+                logger.warning("Could not clear rows for %s/%s (%s)", feat_id, source_name, e)
+
+    # ── 4. write the already-computed embeddings
+    for feat_id, source_name, chunks, hashes, vectors in pending:
+        upsert_chunks(
+            cfg.lancedb_path, cfg.project, feat_id, source_name, chunks, vectors,
+            embedding_model=cfg.ollama_model, hashes=hashes,
+        )
+
+    return {
+        "sources": total_sources,
+        "chunks": total_chunks,
+        "skipped": skipped_sources,
+        "skipped_chunks": skipped_chunks,
+        "embedded": reuse.embedded,
+        "reused": reuse.reused,
+        "changed": changed,
+        "migration": migration,
+        "migrated": migration == "recreated",
+    }
