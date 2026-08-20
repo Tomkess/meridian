@@ -2,8 +2,17 @@
 
 ## 0.6.2 — 2026-08-20
 
-- fix: an empty remote is skipped, not reported as failed
-- docs: write the v0.6.1 changelog section
+### Fixed
+
+- **An empty remote is skipped, not reported as failed.** `git remote show
+  origin` answers `HEAD branch: (unknown)` for a repo created but never pushed
+  to. `default_branch()` took that literally as a branch name, so the fetch
+  failed and `install --all --pr` reported the repo as **failed** with a raw
+  `couldn't find remote ref (unknown)`. Nothing is wrong with such a repo —
+  there is simply nothing to branch from yet, which is a skip with a reason.
+  Hit on two real repos while propagating skills across thirteen projects.
+
+Both new tests fail against the old parser. 910 tests, ruff and mypy clean.
 
 ## 0.6.1 — 2026-08-20
 
