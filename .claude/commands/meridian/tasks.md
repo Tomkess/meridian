@@ -22,7 +22,13 @@ This skill bridges spec → build. Each task must be small enough to complete an
 2. Read `specs/FEAT-NNN_*/breakdown.md` — focus on: Components, Implementation Order, Test Strategy.
    If `breakdown.md` doesn't exist, ask the user to run `/breakdown FEAT-NNN` first.
 3. If `specs/STEERING.md` exists, read it — apply its naming conventions and standards to task
-   descriptions so they match the project's language and patterns.
+   descriptions so they match the project's language and patterns. If `specs/CONTRACT.md` exists,
+   read it too and use its exact module, type and CLI names — it is binding, and it replaces
+   reading other features' specs to find out what they called things.
+
+   Read nothing else. This stage does **not** need `VISION.md`, the goal file, `sources/`,
+   `summaries/`, or other features' specs — the breakdown already encodes those decisions.
+   Do not run `meridian search` here.
 4. Derive the task list:
    - Follow the **Implementation Order** from `breakdown.md` as the primary sequence.
    - Map each task to at least one Acceptance Criterion where possible.
@@ -32,7 +38,14 @@ This skill bridges spec → build. Each task must be small enough to complete an
    - Flag tasks that require a decision with `[DECISION NEEDED]`.
    - Keep tasks atomic: if a task takes > 4 hours, split it.
 
-Write the task list to `specs/FEAT-NNN_*/tasks.md`:
+Write the task list to `specs/FEAT-NNN_*/tasks.md` in a **single** Write call. Do not read it back
+to verify, and do not make a revision pass. Task-list output is billed at roughly 5× input and is
+never cached, so a write-review-rewrite cycle triples the cost of this stage for little gain.
+
+Keep each task to the three lines shown below — description, `Pre:`, `AC:`. Do not add per-task
+rationale, design notes, or code sketches; those belong in `breakdown.md` and repeating them here
+is the main reason task lists bloat. If the list exceeds ~60 tasks, stop and say the feature should
+be split rather than continuing to write.
 
 ---
 

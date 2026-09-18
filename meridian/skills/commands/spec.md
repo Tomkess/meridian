@@ -15,15 +15,24 @@ $ARGUMENTS is the feature ID (e.g. `feat-007` or `FEAT-007`). If omitted, ask th
    > "Before writing the spec — how much time is this feature worth?
    > `xs` = < 1 day  ·  `s` = 1–3 days  ·  `m` = 1–2 weeks  ·  `l` = 2–6 weeks"
    Set the appetite in frontmatter before continuing.
-5. Read any text files in `specs/FEAT-NNN_*/sources/` — these are raw research documents.
+5. Read the research for this feature. If `specs/FEAT-NNN_*/summaries/` already holds a summary for
+   a source (from a previous run, `/brief`, or `/research`), read the summary and **not** the raw
+   source — raw sources are the largest single input to this stage and re-reading one you have
+   already distilled buys nothing. Read raw files from `specs/FEAT-NNN_*/sources/` only where no
+   summary exists yet.
 6. Run semantic search to pull in related context from across all features:
    ```
    meridian search "<feature name>" --no-rerank -n 5
    ```
    Note any results from *other* features — they may reveal relevant prior art or dependencies.
 7. Produce the elaborated spec body using the structure below. Write it directly into `spec.md`
-   (preserve frontmatter, replace body). Also write a brief summary of each source file to
-   `specs/FEAT-NNN_*/summaries/<source-stem>.md`.
+   (preserve frontmatter, replace body) in a **single** Write call — do not read it back to verify
+   and do not make a revision pass. Also write a brief summary of each source file to
+   `specs/FEAT-NNN_*/summaries/<source-stem>.md`, skipping any that already has one.
+
+   A spec is a decision record, not a design document: target 150–300 lines. Detail about *how* to
+   build it belongs in `/breakdown`, and repeating it here means it gets written twice and read
+   twice by every downstream stage.
 8. Establish confidence in the problem definition. **Assess it yourself** from the elaboration
    and available research, and set it — do **not** end your turn waiting for an answer (the skill
    must work headlessly as well as interactively, and it cannot tell which mode it is in):
