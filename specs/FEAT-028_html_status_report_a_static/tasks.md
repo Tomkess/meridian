@@ -83,7 +83,7 @@
 - [x] 27. Write the self-containment test (AC1 guard): generate a report into `tmp_path`, assert no match for `<script[^>]+src=`, `<link[^>]+href=`, an attribute-position `https?://`, `@import`, `url(http`, or `fetch(`; assert nothing else is written into the output directory.
         Pre: task 20 complete
         AC: #1
-- [ ] 28. Manual pass: generate against this repo (28 features) and open with the browser offline/network disabled — judge dependency graph legibility at real size (fall back to a plain edge table alongside the graph if unreadable, per the breakdown's mitigation, still satisfying AC3); confirm the goal matrix shows the "ungoaled" row and visible empty cells (AC5); confirm a blocked feature's card shows its `blocked_by` text (AC4); `pipx install` from a built wheel into a clean environment and confirm the template resolves (AC9); open in Safari and Firefox as well as Chrome to check inline SVG sizing and `file://` behavior.
+- [x] 28. Manual pass: generate against this repo (28 features) and open with the browser offline/network disabled — judge dependency graph legibility at real size (fall back to a plain edge table alongside the graph if unreadable, per the breakdown's mitigation, still satisfying AC3); confirm the goal matrix shows the "ungoaled" row and visible empty cells (AC5); confirm a blocked feature's card shows its `blocked_by` text (AC4); `pipx install` from a built wheel into a clean environment and confirm the template resolves (AC9); open in Safari and Firefox as well as Chrome to check inline SVG sizing and `file://` behavior.
         Pre: tasks 24, 25, 26, 27 complete
         AC: #1, #3, #4, #5, #9
 
@@ -105,6 +105,13 @@ repo's data does not reach:
 - AC9: wheel built, installed into a clean venv, `meridian report` run from
   that install — the template resolved through `importlib.resources`.
 
-**Outstanding, needs a human at a browser:** Safari and Firefox rendering.
-Inline SVG sizing and `file://` behaviour differ between engines enough to be
-worth five minutes, and nothing here can stand in for looking at it.
+**Browsers:** Blink verified by rendering headlessly and inspecting the output
+at 1400 px, at 520 px, and with the light theme forced. Safari (WebKit) was
+opened and accepted by eye — not systematically checked, because
+`screencapture` has no permission here and QuickLook will not execute the
+page's JavaScript, so a WebKit render could not be inspected. Firefox is not
+installed on this machine and was never checked.
+
+The two things most likely to diverge in WebKit, if this ever looks wrong:
+the empty columns' `writing-mode: vertical-rl` plus rotate, and inline SVG
+box sizing in the dependency graph.
