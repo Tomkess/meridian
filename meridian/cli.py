@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from meridian import __version__, portfolio
+from meridian import __version__, portfolio, report
 from meridian.config import load_config, slugify_project
 from meridian.skilldist import open_skill_prs, sync_all, sync_skills
 from meridian.specs import (
@@ -151,16 +151,10 @@ def _cycle_capacity_summary(specs_dir: Path, cycle_id: str) -> tuple[str, bool]:
 # status
 # --------------------------------------------------------------------------- #
 
-# (frontmatter status, column header) — headers kept short so the dashboard
-# fits a normal terminal without squeezing the project name.
-_STATUS_COLUMNS = (
-    ("idea", "idea"),
-    ("draft", "draft"),
-    ("in-progress", "prog"),
-    ("blocked", "blkd"),
-    ("done", "done"),
-    ("in-production", "prod"),
-)
+# FEAT-028 moved the column list into meridian.report so the terminal dashboard
+# and the HTML report's kanban columns cannot disagree about which statuses are
+# workable. Same direction portfolio.APPETITE_WEIGHT already flows.
+_STATUS_COLUMNS = report.STATUS_COLUMNS
 
 
 def _emit_json(payload) -> None:
@@ -450,30 +444,10 @@ def status(
         raise typer.Exit(0)
 
     if as_json:
-        cfg_json = _config()
-        _emit_json({
-            "project": cfg_json.project,
-            "features": [
-                {
-                    "id": str(s.get("id", "")).upper(),
-                    "name": s.get("name"),
-                    "status": s.get("status", "idea"),
-                    "appetite": s.get("appetite"),
-                    "confidence": s.get("confidence"),
-                    "cycle": s.get("cycle"),
-                    "goal": s.get("goal"),
-                    "updated": s.get("updated"),
-                    "depends_on": s.get("depends_on") or [],
-                    "enables": s.get("enables") or [],
-                    "blocked_by": s.get("blocked_by"),
-                    "tasks": (
-                        {"checked": tp[0], "total": tp[1]}
-                        if (tp := task_progress(Path(str(s["_path"])).parent)) else None
-                    ),
-                }
-                for s in all_specs(cfg_json.specs_path)
-            ],
-        })
+        # FEAT-028: the dict used to be inlined here. Two copies of it — one for
+        # the CLI, one for the report — is exactly the drift AC2 forbids, so
+        # there is only ever this call.
+        _emit_json(report.build_payload(_config()))
 
     cfg = _config()
     specs = all_specs(cfg.specs_path)
