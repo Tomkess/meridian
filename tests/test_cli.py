@@ -877,3 +877,91 @@ class TestEnrichScreenshotInProcess:
         assert (_sources_dir(proj_with_idea) / "paper.txt").exists()
         # No sidecar for a text source.
         assert not (_sources_dir(proj_with_idea) / "paper.notes.md").exists()
+
+
+# ── meridian report (FEAT-028) ────────────────────────────────────────────── #
+
+
+class TestReportCommand:
+    """End-to-end behaviour of `meridian report` against a real project."""
+
+    def test_writes_default_path_and_exits_zero(self, proj_with_idea: Path):
+        r = run(["report"], proj_with_idea)
+        assert r.returncode == 0, r.stderr
+        out = proj_with_idea / "specs" / ".meridian" / "report.html"
+        assert out.exists()
+        assert str(out) in r.stdout
+        assert "FEAT-001" in out.read_text()
+
+    def test_out_override_creates_parent_directories(self, proj_with_idea: Path):
+        target = proj_with_idea / "build" / "nested" / "dash.html"
+        r = run(["report", "--out", str(target)], proj_with_idea)
+        assert r.returncode == 0, r.stderr
+        assert target.exists()
+        assert not (proj_with_idea / "specs" / ".meridian").exists()
+
+    def test_out_pointing_at_a_directory_fails_readably(self, proj_with_idea: Path):
+        d = proj_with_idea / "adirectory"
+        d.mkdir()
+        r = run(["report", "--out", str(d)], proj_with_idea)
+        assert r.returncode == 1
+        assert "is a directory" in r.stdout
+        assert "Traceback" not in r.stderr
+
+    def test_unwritable_out_fails_readably(self, proj_with_idea: Path):
+        r = run(["report", "--out", "/proc/nope/report.html"], proj_with_idea)
+        assert r.returncode == 1
+        assert "Traceback" not in r.stderr
+
+    def test_outside_a_project_fails_like_status(self, tmp_path: Path):
+        bare = tmp_path / "not-a-project"
+        bare.mkdir()
+        rep = run(["report"], bare)
+        stat = run(["status"], bare)
+        assert rep.returncode == 1
+        assert "No .meridian.toml found" in rep.stdout
+        # Same failure, same message shape as the command it mirrors.
+        assert ("No .meridian.toml found" in stat.stdout) == (
+            "No .meridian.toml found" in rep.stdout
+        )
+
+    def test_unknown_project_slug_lists_what_is_known(self, proj_with_idea: Path):
+        r = run(["report", "--project", "no-such-project"], proj_with_idea)
+        assert r.returncode == 1
+        assert "No tracked project" in r.stdout
+
+    def test_back_to_back_runs_agree_with_no_spec_change(self, proj_with_idea: Path):
+        """AC7: no caching. `generated_at` moves, the features do not."""
+        import json
+        import re
+
+        def features(path: Path) -> list:
+            html = path.read_text()
+            raw = re.search(r"const DATA = (\{.*?\});</script>", html, re.S).group(1)
+            return json.loads(raw.replace("<\\/", "</"))["features"]
+
+        out = proj_with_idea / "r.html"
+        run(["report", "--out", str(out)], proj_with_idea)
+        first = features(out)
+        run(["report", "--out", str(out)], proj_with_idea)
+        assert features(out) == first
+
+    def test_new_feature_appears_without_invalidating_anything(self, proj_with_idea: Path):
+        out = proj_with_idea / "r.html"
+        run(["report", "--out", str(out)], proj_with_idea)
+        assert "FEAT-002" not in out.read_text()
+
+        assert run(["new", "a second idea"], proj_with_idea).returncode == 0
+        run(["report", "--out", str(out)], proj_with_idea)
+        assert "FEAT-002" in out.read_text()
+
+    def test_project_with_no_specs_still_writes_a_page(self, proj: Path):
+        out = proj / "r.html"
+        r = run(["report", "--out", str(out)], proj)
+        assert r.returncode == 0, r.stderr
+        html = out.read_text()
+        assert "No features yet" in html
+
+    def test_report_is_listed_in_help(self, proj: Path):
+        r = run(["--help"], proj)
+        assert "report" in r.stdout

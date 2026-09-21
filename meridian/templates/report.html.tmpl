@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meridian report</title>
+<!--
+  FEAT-028. Self-contained by contract: no <script src>, no <link
+  rel=stylesheet>, no webfont, no fetch. The page must render with the network
+  off, from a file:// URL, so everything it needs is in this file and the
+  payload embedded below. tests/test_report.py asserts that.
+
+  System font stack only — a Google Fonts <link> would be a network reference.
+-->
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1c1b1a;
+    --ink-dim: #6b6862;
+    --ink-faint: #9b978f;
+    --line: #e3e0da;
+    --line-strong: #cfcbc3;
+    --accent: #3b5bdb;
+
+    --st-idea: #9b978f;
+    --st-draft: #3b5bdb;
+    --st-in-progress: #b8860b;
+    --st-blocked: #c92a2a;
+    --st-done: #2f9e44;
+    --st-in-production: #1f7a34;
+    --st-abandoned: #a09a92;
+
+    --heat-0: #eef4ee;
+    --heat-1: #fdf6e3;
+    --heat-2: #fbe9d0;
+    --heat-3: #f7d6d6;
+
+    --radius: 6px;
+    --gap: 16px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16161a;
+      --panel: #1e1e23;
+      --ink: #e8e6e3;
+      --ink-dim: #a6a29b;
+      --ink-faint: #736f68;
+      --line: #2e2e35;
+      --line-strong: #3f3f48;
+      --accent: #7f9cf5;
+
+      --st-idea: #8b8781;
+      --st-draft: #7f9cf5;
+      --st-in-progress: #d4a020;
+      --st-blocked: #ff6b6b;
+      --st-done: #51cf66;
+      --st-in-production: #2f9e44;
+      --st-abandoned: #6b6862;
+
+      --heat-0: #1b241d;
+      --heat-1: #2a2416;
+      --heat-2: #33251a;
+      --heat-3: #3a1f1f;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #16161a;
+    --panel: #1e1e23;
+    --ink: #e8e6e3;
+    --ink-dim: #a6a29b;
+    --ink-faint: #736f68;
+    --line: #2e2e35;
+    --line-strong: #3f3f48;
+    --accent: #7f9cf5;
+    --st-idea: #8b8781;
+    --st-draft: #7f9cf5;
+    --st-in-progress: #d4a020;
+    --st-blocked: #ff6b6b;
+    --st-done: #51cf66;
+    --st-in-production: #2f9e44;
+    --st-abandoned: #6b6862;
+    --heat-0: #1b241d;
+    --heat-1: #2a2416;
+    --heat-2: #33251a;
+    --heat-3: #3a1f1f;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 16px 72px; }
+
+  header.page { margin-bottom: 28px; }
+  header.page h1 {
+    margin: 0 0 4px;
+    font-size: 21px;
+    font-weight: 620;
+    letter-spacing: -0.01em;
+  }
+  header.page .sub { color: var(--ink-dim); font-size: 13px; }
+  header.page .sub code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+  }
+
+  .totals { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .pill {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    font-size: 12px;
+    color: var(--ink-dim);
+  }
+  .pill b { color: var(--ink); font-weight: 600; font-size: 13px; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+
+  section { margin-top: 36px; }
+  section > h2 {
+    margin: 0 0 2px;
+    font-size: 13px;
+    font-weight: 620;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  section > .hint {
+    margin: 0 0 14px;
+    font-size: 12px;
+    color: var(--ink-faint);
+  }
+
+  /* ── kanban ──────────────────────────────────────────────────────────── */
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .col { min-width: 0; }
+  .col > .head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 6px;
+    padding: 0 2px 8px;
+    border-bottom: 2px solid var(--st, var(--line-strong));
+    margin-bottom: 10px;
+  }
+  .col > .head .nm { font-size: 12px; font-weight: 600; }
+  .col > .head .ct { font-size: 12px; color: var(--ink-faint); }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--st, var(--line-strong));
+    border-radius: var(--radius);
+    padding: 9px 10px;
+    margin-bottom: 8px;
+  }
+  .card .id {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+    display: flex; justify-content: space-between; gap: 6px;
+  }
+  .card .nm {
+    margin-top: 3px;
+    font-size: 12.5px;
+    line-height: 1.35;
+    /* Feature names in this repo run to a paragraph. Clamp rather than
+       truncate at a character count, which cuts mid-word. */
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card .meta {
+    margin-top: 6px;
+    display: flex; flex-wrap: wrap; gap: 4px;
+    font-size: 10.5px;
+    color: var(--ink-dim);
+  }
+  .card .meta span {
+    padding: 1px 5px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+  }
+  .card .blocked {
+    margin-top: 6px;
+    padding: 5px 6px;
+    border-radius: 4px;
+    background: var(--heat-3);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .card .blocked b { font-weight: 600; }
+
+  .bar {
+    margin-top: 7px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--line);
+    overflow: hidden;
+  }
+  .bar > i { display: block; height: 100%; background: var(--st-done); }
+  .bar-label { margin-top: 3px; font-size: 10.5px; color: var(--ink-faint); }
+  .no-tasks { margin-top: 5px; font-size: 10.5px; color: var(--ink-faint); font-style: italic; }
+
+  details.extra { margin-top: 18px; }
+  details.extra > summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--ink-dim);
+  }
+  details.extra .board { margin-top: 12px; grid-template-columns: repeat(6, minmax(0,1fr)); }
+
+  /* ── matrix ──────────────────────────────────────────────────────────── */
+
+  .matrix-scroll { overflow-x: auto; }
+  table.matrix {
+    border-collapse: collapse;
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    font-size: 12px;
+  }
+  table.matrix th, table.matrix td {
+    border: 1px solid var(--line);
+    padding: 7px 9px;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.matrix thead th {
+    font-size: 11px; font-weight: 600;
+    color: var(--ink-dim);
+    background: var(--bg);
+    white-space: nowrap;
+  }
+  table.matrix td.goal {
+    min-width: 190px;
+    max-width: 260px;
+  }
+  table.matrix td.goal .gid {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+  }
+  table.matrix td.goal .gname { font-weight: 560; }
+  table.matrix td.cell { min-width: 96px; }
+  /* An empty cell is a gap in the plan, which is information. Shaded so the
+     eye finds it instead of reading past a blank. */
+  table.matrix td.cell.empty { background: var(--bg); }
+  table.matrix td.cell.empty::after {
+    content: "·";
+    color: var(--ink-faint);
+  }
+  .chip {
+    display: inline-block;
+    margin: 1px 2px 1px 0;
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid var(--st, var(--line));
+    color: var(--st, var(--ink));
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    white-space: nowrap;
+  }
+  tr.ungoaled td.goal .gname { color: var(--ink-dim); font-style: italic; }
+
+  /* ── graph ───────────────────────────────────────────────────────────── */
+
+  .graph-wrap {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 10px;
+    overflow-x: auto;
+  }
+  svg.graph { display: block; }
+  svg.graph .node rect {
+    fill: var(--bg);
+    stroke: var(--st, var(--line-strong));
+    stroke-width: 1.5;
+    rx: 4;
+  }
+  svg.graph .node text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    fill: var(--ink);
+    dominant-baseline: middle;
+  }
+  svg.graph .node.missing rect {
+    stroke: var(--st-blocked);
+    stroke-dasharray: 3 3;
+    fill: none;
+  }
+  svg.graph .node.missing text { fill: var(--st-blocked); }
+  svg.graph path.edge {
+    fill: none;
+    stroke: var(--line-strong);
+    stroke-width: 1.4;
+  }
+  svg.graph path.edge.dangling {
+    stroke: var(--st-blocked);
+    stroke-dasharray: 4 3;
+  }
+  svg.graph text.rank-label {
+    font-size: 10px;
+    fill: var(--ink-faint);
+  }
+
+  .legend { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 14px; font-size: 11.5px; color: var(--ink-dim); }
+  .legend .k { display: inline-flex; align-items: center; gap: 6px; }
+  .legend svg { display: block; }
+
+  table.edges {
+    margin-top: 14px;
+    border-collapse: collapse;
+    font-size: 12px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    width: 100%;
+  }
+  table.edges th, table.edges td {
+    border-bottom: 1px solid var(--line);
+    padding: 5px 9px;
+    text-align: left;
+  }
+  table.edges th { font-size: 11px; color: var(--ink-dim); font-weight: 600; }
+  table.edges code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+  }
+  table.edges tr.dangling td { color: var(--st-blocked); }
+
+  /* ── staleness ───────────────────────────────────────────────────────── */
+
+  table.stale {
+    border-collapse: collapse;
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    font-size: 12px;
+  }
+  table.stale th, table.stale td {
+    padding: 6px 9px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+  }
+  table.stale th { font-size: 11px; color: var(--ink-dim); font-weight: 600; white-space: nowrap; }
+  table.stale td.id code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+  }
+  table.stale td.nm {
+    max-width: 520px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  table.stale td.age { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  table.stale tr.h0 td.age { background: var(--heat-0); }
+  table.stale tr.h1 td.age { background: var(--heat-1); }
+  table.stale tr.h2 td.age { background: var(--heat-2); }
+  table.stale tr.h3 td.age { background: var(--heat-3); font-weight: 600; }
+
+  footer.page {
+    margin-top: 44px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    line-height: 1.7;
+  }
+  footer.page code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  footer.page .warn { color: var(--st-blocked); }
+
+  .empty-state {
+    padding: 40px 16px;
+    text-align: center;
+    color: var(--ink-dim);
+    background: var(--panel);
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius);
+  }
+
+  @media (max-width: 900px) {
+    .board, details.extra .board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 560px) {
+    .board, details.extra .board { grid-template-columns: 1fr; }
+    .wrap { padding: 20px 16px 56px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap" id="root"></div>
+
+<script>const DATA = /*__MERIDIAN_PAYLOAD__*/null/*__END_MERIDIAN_PAYLOAD__*/;</script>
+<script>
+(function () {
+  "use strict";
+
+  // Every string from the payload goes through this before it reaches the DOM.
+  // The payload is already JSON-escaped for the script block, but a feature
+  // name is still arbitrary text and must not become markup here either.
+  function esc(value) {
+    return String(value === null || value === undefined ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  var d = DATA || {};
+  var features = d.features || [];
+  var signals = d.signals || {};
+  var columns = d.columns || [];
+  var goals = d.goals || [];
+  var edges = d.edges || [];
+
+  function sig(id) { return signals[id] || {}; }
+  function statusVar(status) { return "--st-" + String(status).replace(/[^a-z-]/gi, ""); }
+
+  var byId = {};
+  features.forEach(function (f) { byId[f.id] = f; });
+
+  // ── header ─────────────────────────────────────────────────────────────
+  function renderHeader() {
+    var counts = {};
+    features.forEach(function (f) { counts[f.status] = (counts[f.status] || 0) + 1; });
+
+    var pills = columns.concat([{ status: "abandoned", label: "abandoned" }])
+      .filter(function (c) { return counts[c.status]; })
+      .map(function (c) {
+        return '<span class="pill"><i class="dot" style="background:var(' +
+          statusVar(c.status) + ')"></i><b>' + counts[c.status] + '</b> ' +
+          esc(c.status) + '</span>';
+      }).join("");
+
+    return '' +
+      '<header class="page">' +
+        '<h1>' + esc(d.project || "Meridian") + '</h1>' +
+        '<div class="sub">' + features.length + ' feature' +
+          (features.length === 1 ? '' : 's') +
+          ' · generated <code>' + esc(d.generated_at || "") + '</code>' +
+        '</div>' +
+        '<div class="totals">' + pills + '</div>' +
+      '</header>';
+  }
+
+  // ── kanban ─────────────────────────────────────────────────────────────
+  function card(f) {
+    var s = sig(f.id);
+    var html = '<article class="card" style="--st:var(' + statusVar(f.status) + ')">';
+    html += '<div class="id"><span>' + esc(f.id) + '</span>';
+    if (s.days_since_change !== null && s.days_since_change !== undefined) {
+      html += '<span title="days since spec.md or tasks.md changed">' +
+        s.days_since_change + 'd</span>';
+    }
+    html += '</div>';
+    html += '<div class="nm">' + esc(f.name || "Untitled") + '</div>';
+
+    var meta = [];
+    if (f.appetite) meta.push('<span>' + esc(f.appetite) + '</span>');
+    if (f.confidence) meta.push('<span>conf ' + esc(f.confidence) + '</span>');
+    if (f.cycle) meta.push('<span>' + esc(f.cycle) + '</span>');
+    if (s.goal_key) meta.push('<span>' + esc(s.goal_key) + '</span>');
+    if (meta.length) html += '<div class="meta">' + meta.join("") + '</div>';
+
+    // A blocked card without its reason sends the reader back to the spec file,
+    // which is the one thing the board is meant to save them.
+    if (f.status === "blocked" && f.blocked_by) {
+      html += '<div class="blocked"><b>blocked:</b> ' + esc(f.blocked_by) + '</div>';
+    }
+
+    if (f.tasks && f.tasks.total) {
+      var pct = Math.round((f.tasks.checked / f.tasks.total) * 100);
+      html += '<div class="bar"><i style="width:' + pct + '%"></i></div>';
+      html += '<div class="bar-label">' + f.tasks.checked + '/' + f.tasks.total +
+        ' tasks · ' + pct + '%</div>';
+    } else if (f.status === "in-progress") {
+      // Distinct from 0%: there is no task list at all. `task_progress()`
+      // returns None for a stub file, and conflating the two hides the fact
+      // that the feature was never broken down.
+      html += '<div class="no-tasks">no task list</div>';
+    }
+
+    return html + '</article>';
+  }
+
+  function board(cols, list) {
+    return '<div class="board">' + cols.map(function (c) {
+      var mine = list.filter(function (f) { return f.status === c.status; });
+      return '<div class="col" style="--st:var(' + statusVar(c.status) + ')">' +
+        '<div class="head"><span class="nm">' + esc(c.label) + '</span>' +
+        '<span class="ct">' + mine.length + '</span></div>' +
+        mine.map(card).join("") +
+      '</div>';
+    }).join("") + '</div>';
+  }
+
+  function renderBoard() {
+    var known = {};
+    columns.forEach(function (c) { known[c.status] = true; });
+    var main = features.filter(function (f) { return known[f.status]; });
+    // Anything whose status is not a column — `abandoned`, or a status added to
+    // specs.VALID_STATUSES after this page shipped — lands here rather than
+    // disappearing. Silent omission is the bug; a collapsed section is not.
+    var rest = features.filter(function (f) { return !known[f.status]; });
+
+    var html = '<section><h2>Board</h2>' +
+      '<p class="hint">Lifecycle state by column. Blocked cards carry their reason.</p>' +
+      board(columns, main);
+
+    if (rest.length) {
+      var restCols = [];
+      var seen = {};
+      rest.forEach(function (f) {
+        if (!seen[f.status]) { seen[f.status] = true; restCols.push({ status: f.status, label: f.status }); }
+      });
+      html += '<details class="extra"><summary>' + rest.length +
+        ' feature' + (rest.length === 1 ? '' : 's') +
+        ' outside the board (' + restCols.map(function (c) { return esc(c.status); }).join(", ") +
+        ')</summary>' + board(restCols, rest) + '</details>';
+    }
+
+    return html + '</section>';
+  }
+
+  // ── goal × feature matrix ──────────────────────────────────────────────
+  function renderMatrix() {
+    var rows = goals.map(function (g) { return { id: g.id, name: g.name, status: g.status, ungoaled: false }; });
+    // Every feature whose goal_key names a goal that has no file still needs a
+    // row, or the matrix quietly loses it.
+    var declared = {};
+    rows.forEach(function (r) { declared[r.id] = true; });
+    features.forEach(function (f) {
+      var k = sig(f.id).goal_key;
+      if (k && !declared[k]) { declared[k] = true; rows.push({ id: k, name: "(no goal file)", status: "missing", ungoaled: false }); }
+    });
+    rows.push({ id: null, name: "ungoaled", status: "", ungoaled: true });
+
+    var head = '<tr><th>Goal</th>' + columns.map(function (c) {
+      return '<th>' + esc(c.label) + '</th>';
+    }).join("") + '</tr>';
+
+    var body = rows.map(function (r) {
+      var mine = features.filter(function (f) {
+        var k = sig(f.id).goal_key;
+        return r.ungoaled ? !k : k === r.id;
+      });
+      var cells = columns.map(function (c) {
+        var here = mine.filter(function (f) { return f.status === c.status; });
+        if (!here.length) return '<td class="cell empty"></td>';
+        return '<td class="cell">' + here.map(function (f) {
+          return '<span class="chip" style="--st:var(' + statusVar(f.status) + ')" title="' +
+            esc(f.name || "") + '">' + esc(f.id) + '</span>';
+        }).join("") + '</td>';
+      }).join("");
+      return '<tr' + (r.ungoaled ? ' class="ungoaled"' : '') + '>' +
+        '<td class="goal">' +
+          (r.id ? '<div class="gid">' + esc(r.id) + '</div>' : '') +
+          '<div class="gname">' + esc(r.name) + '</div>' +
+          (r.status && r.status !== "active" ? '<div class="gid">' + esc(r.status) + '</div>' : '') +
+        '</td>' + cells + '</tr>';
+    }).join("");
+
+    return '<section><h2>Goals × features</h2>' +
+      '<p class="hint">An empty cell is a gap, not a missing row — every goal is listed even with nothing in flight.</p>' +
+      '<div class="matrix-scroll"><table class="matrix"><thead>' + head +
+      '</thead><tbody>' + body + '</tbody></table></div></section>';
+  }
+
+  // ── dependency graph ───────────────────────────────────────────────────
+  function renderGraph() {
+    if (!edges.length) {
+      return '<section><h2>Dependencies</h2>' +
+        '<p class="hint">No feature declares <code>depends_on</code> or <code>enables</code>.</p></section>';
+    }
+
+    // Nodes: every feature that participates in an edge, plus the dangling
+    // targets, which get a node of their own so the edge has somewhere to land.
+    var participating = {};
+    edges.forEach(function (e) { participating[e.from] = true; participating[e.to] = true; });
+
+    var nodes = Object.keys(participating).map(function (id) {
+      var f = byId[id];
+      return {
+        id: id,
+        missing: !f,
+        status: f ? f.status : "blocked",
+        name: f ? (f.name || "") : "not a feature in this project",
+        rank: f ? (sig(id).rank || 0) : 0
+      };
+    });
+
+    // A dangling target has no rank of its own; place it one column left of the
+    // feature that points at it so the edge still reads left-to-right.
+    var minRankOf = {};
+    edges.forEach(function (e) {
+      if (!byId[e.to]) {
+        var r = (sig(e.from).rank || 0) - 1;
+        minRankOf[e.to] = minRankOf[e.to] === undefined ? r : Math.min(minRankOf[e.to], r);
+      }
+    });
+    nodes.forEach(function (n) {
+      if (n.missing && minRankOf[n.id] !== undefined) n.rank = minRankOf[n.id];
+    });
+
+    var ranks = nodes.map(function (n) { return n.rank; });
+    var minRank = Math.min.apply(null, ranks);
+    nodes.forEach(function (n) { n.rank -= minRank; });
+
+    // Columnar layout: x from dependency depth, y from position within the
+    // column. Deterministic and cheap — no force simulation, which is where a
+    // week disappears for a graph this size.
+    var byRank = {};
+    nodes.sort(function (a, b) { return a.id < b.id ? -1 : 1; });
+    nodes.forEach(function (n) {
+      (byRank[n.rank] = byRank[n.rank] || []).push(n);
+    });
+
+    var NW = 104, NH = 26, GAPX = 74, GAPY = 12, PADX = 14, PADY = 30;
+    var maxRank = Math.max.apply(null, nodes.map(function (n) { return n.rank; }));
+    var tallest = 0;
+    Object.keys(byRank).forEach(function (r) { tallest = Math.max(tallest, byRank[r].length); });
+
+    var pos = {};
+    for (var r = 0; r <= maxRank; r++) {
+      var col = byRank[r] || [];
+      for (var i = 0; i < col.length; i++) {
+        pos[col[i].id] = {
+          x: PADX + r * (NW + GAPX),
+          y: PADY + i * (NH + GAPY)
+        };
+      }
+    }
+
+    var width = PADX * 2 + (maxRank + 1) * NW + maxRank * GAPX;
+    var height = PADY + tallest * (NH + GAPY) + 10;
+
+    var paths = edges.map(function (e) {
+      var a = pos[e.from], b = pos[e.to];
+      if (!a || !b) return "";
+      // `from` depends on `to`, and `to` sits in a lower rank (further left),
+      // so the line runs from the dependency's right edge into the dependent's
+      // left edge.
+      var x1 = b.x + NW, y1 = b.y + NH / 2;
+      var x2 = a.x, y2 = a.y + NH / 2;
+      if (b.x >= a.x) { x1 = b.x; x2 = a.x + NW; }  // same or inverted column
+      var mx = (x1 + x2) / 2;
+      return '<path class="edge' + (e.dangling ? ' dangling' : '') + '" d="M' +
+        x1 + ',' + y1 + ' C' + mx + ',' + y1 + ' ' + mx + ',' + y2 + ' ' +
+        x2 + ',' + y2 + '"><title>' + esc(e.from) + ' depends on ' + esc(e.to) +
+        (e.dangling ? ' (not found)' : '') + '</title></path>';
+    }).join("");
+
+    var boxes = nodes.map(function (n) {
+      var p = pos[n.id];
+      return '<g class="node' + (n.missing ? ' missing' : '') +
+        '" style="--st:var(' + statusVar(n.status) + ')" transform="translate(' +
+        p.x + ',' + p.y + ')">' +
+        '<rect width="' + NW + '" height="' + NH + '"></rect>' +
+        '<text x="8" y="' + (NH / 2) + '">' + esc(n.id) + '</text>' +
+        '<title>' + esc(n.id) + (n.name ? ' — ' + esc(n.name) : '') + '</title>' +
+      '</g>';
+    }).join("");
+
+    var rankLabels = [];
+    for (var rr = 0; rr <= maxRank; rr++) {
+      rankLabels.push('<text class="rank-label" x="' + (PADX + rr * (NW + GAPX)) +
+        '" y="16">depth ' + rr + '</text>');
+    }
+
+    var dangling = edges.filter(function (e) { return e.dangling; });
+
+    var html = '<section><h2>Dependencies</h2>' +
+      '<p class="hint">Columns are dependency depth; an arc runs from a dependency into what needs it. ' +
+      'Dashed red is a <code>depends_on</code> target that is not a feature in this project.</p>' +
+      '<div class="graph-wrap"><svg class="graph" width="' + width + '" height="' +
+      height + '" viewBox="0 0 ' + width + ' ' + height + '" role="img" ' +
+      'aria-label="Feature dependency graph">' +
+      rankLabels.join("") + paths + boxes + '</svg></div>';
+
+    html += '<div class="legend">' +
+      '<span class="k"><svg width="26" height="8"><path d="M0,4 L26,4" stroke="var(--line-strong)" stroke-width="1.4"/></svg> resolved</span>' +
+      '<span class="k"><svg width="26" height="8"><path d="M0,4 L26,4" stroke="var(--st-blocked)" stroke-width="1.4" stroke-dasharray="4 3"/></svg> dangling</span>' +
+      '</div>';
+
+    // The table is not a fallback for a missing graph — it is the readable
+    // form once the node count outgrows the columns, and it keeps every
+    // relationship legible at any size.
+    html += '<table class="edges"><thead><tr><th>Depends on</th><th>Dependency</th>' +
+      '<th>Declared by</th><th></th></tr></thead><tbody>' +
+      edges.map(function (e) {
+        return '<tr' + (e.dangling ? ' class="dangling"' : '') + '>' +
+          '<td><code>' + esc(e.from) + '</code></td>' +
+          '<td><code>' + esc(e.to) + '</code></td>' +
+          '<td>' + esc(e.kind) + '</td>' +
+          '<td>' + (e.dangling ? 'not found' : '') + '</td></tr>';
+      }).join("") + '</tbody></table>';
+
+    if (dangling.length) {
+      html += '<p class="hint">' + dangling.length + ' dangling reference' +
+        (dangling.length === 1 ? '' : 's') + ' — likely a typo or a feature from another repo.</p>';
+    }
+
+    return html + '</section>';
+  }
+
+  // ── staleness ──────────────────────────────────────────────────────────
+  function renderStaleness() {
+    var rows = features.filter(function (f) {
+      return sig(f.id).days_since_change !== null && sig(f.id).days_since_change !== undefined;
+    }).sort(function (a, b) {
+      return sig(b.id).days_since_change - sig(a.id).days_since_change;
+    });
+    if (!rows.length) return "";
+
+    var staleDays = d.stale_days || 30;
+    function heat(days) {
+      if (days >= staleDays) return "h3";
+      if (days >= staleDays * 0.66) return "h2";
+      if (days >= staleDays * 0.33) return "h1";
+      return "h0";
+    }
+
+    return '<section><h2>Staleness</h2>' +
+      '<p class="hint">Days since <code>spec.md</code> or <code>tasks.md</code> last changed. Shaded at ' +
+      staleDays + ' days.</p>' +
+      '<table class="stale"><thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Changed</th></tr></thead><tbody>' +
+      rows.map(function (f) {
+        var days = sig(f.id).days_since_change;
+        return '<tr class="' + heat(days) + '">' +
+          '<td class="id"><code>' + esc(f.id) + '</code></td>' +
+          '<td class="nm" title="' + esc(f.name || "") + '">' + esc(f.name || "Untitled") + '</td>' +
+          '<td style="color:var(' + statusVar(f.status) + ')">' + esc(f.status) + '</td>' +
+          '<td class="age">' + days + 'd</td></tr>';
+      }).join("") + '</tbody></table></section>';
+  }
+
+  function renderFooter() {
+    var html = '<footer class="page">';
+    if (d.unreadable_specs) {
+      // In a browser there is no stderr to notice `all_specs`' warning, so the
+      // count has to be on the page or a dropped spec is invisible here.
+      html += '<div class="warn">' + d.unreadable_specs + ' spec file' +
+        (d.unreadable_specs === 1 ? '' : 's') +
+        ' on disk could not be parsed and are missing from this report.</div>';
+    }
+    if (d.staleness_note) html += '<div>' + esc(d.staleness_note) + '</div>';
+    html += '<div>Generated by <code>meridian report</code> ' +
+      esc(d.meridian_version || "") + ' at <code>' + esc(d.generated_at || "") +
+      '</code>. Regenerate rather than edit — this file is derived from <code>specs/</code>.</div>';
+    return html + '</footer>';
+  }
+
+  var root = document.getElementById("root");
+
+  if (!d || !d.project) {
+    root.innerHTML = '<div class="empty-state">No payload embedded. ' +
+      'Run <code>meridian report</code> to generate a populated page.</div>';
+    return;
+  }
+
+  if (!features.length) {
+    root.innerHTML = renderHeader() +
+      '<div class="empty-state">No features yet. ' +
+      'Run <code>meridian new "&lt;idea&gt;"</code> to capture one.</div>' +
+      renderFooter();
+    return;
+  }
+
+  root.innerHTML = renderHeader() + renderBoard() + renderMatrix() +
+    renderGraph() + renderStaleness() + renderFooter();
+})();
+</script>
+</body>
+</html>

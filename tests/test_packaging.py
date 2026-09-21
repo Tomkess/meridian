@@ -124,3 +124,64 @@ class TestSurfaceStaysCut:
         """
         source = (REPO_ROOT / "meridian" / "cli.py").read_text()
         assert "app.registered_commands" in source
+
+
+class TestReportTemplateShips:
+    """FEAT-028 AC9. A template missing from package-data is invisible here and
+    fails only once installed, which is the worst time to find out."""
+
+    def test_template_is_declared_in_package_data(self, pyproject: dict) -> None:
+        patterns = pyproject["tool"]["setuptools"]["package-data"]["meridian"]
+        assert any(
+            p in ("templates/*.tmpl", "templates/report.html.tmpl") for p in patterns
+        ), f"report template not covered by package-data: {patterns}"
+
+    def test_template_is_a_member_of_the_built_wheel(self, tmp_path: Path) -> None:
+        """Builds a real wheel and looks inside it.
+
+        A skip here would defeat the purpose — the whole failure mode is that
+        nothing in the source tree notices — so this falls back through the
+        builders the project actually has rather than skipping on the first
+        one that is missing. `uv` is how this repo builds; `python -m build` is
+        the fallback for an environment that only has that.
+        """
+        import shutil
+        import subprocess
+        import sys
+        import zipfile
+
+        candidates: list[list[str]] = []
+        if shutil.which("uv"):
+            candidates.append(["uv", "build", "--wheel", "--out-dir", str(tmp_path)])
+        candidates.append(
+            [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path)]
+        )
+
+        failures = []
+        for cmd in candidates:
+            proc = subprocess.run(
+                cmd, cwd=REPO_ROOT, capture_output=True, text=True
+            )
+            if proc.returncode == 0:
+                break
+            failures.append(f"{cmd[0]}: {proc.stderr[-200:]}")
+        else:
+            pytest.fail("could not build a wheel with any builder: " + " | ".join(failures))
+
+        wheels = list(tmp_path.glob("*.whl"))
+        assert wheels, "no wheel produced"
+        with zipfile.ZipFile(wheels[0]) as zf:
+            names = zf.namelist()
+        assert "meridian/templates/report.html.tmpl" in names, (
+            f"template missing from wheel; got {[n for n in names if 'templates' in n]}"
+        )
+
+    def test_template_resolves_through_importlib_resources(self) -> None:
+        """Asserts the lookup the code actually performs. A
+        `Path(__file__)`-relative one passes in the source tree and fails in a
+        wheel, so the mechanism is the thing worth pinning."""
+        from meridian import report
+
+        source = (REPO_ROOT / "meridian" / "report.py").read_text()
+        assert "importlib.resources" in source
+        assert report.PAYLOAD_START in report.load_template()

@@ -566,6 +566,93 @@ def status(
 
 
 # --------------------------------------------------------------------------- #
+# report  — the dashboard as a static HTML page (FEAT-028)
+# --------------------------------------------------------------------------- #
+
+_REPORT_HELP = (
+    "Render this project's features as a self-contained HTML page.\n\n"
+    "The visual counterpart to `status`: a kanban board, the goal × feature "
+    "matrix, the depends_on/enables graph, task progress and staleness — the "
+    "things a terminal table cannot draw. One file, no server, no network; it "
+    "opens offline from a file:// URL.\n\n"
+    "Generated on demand and git-ignored. It is derived from specs/, so "
+    "regenerate it rather than editing it."
+)
+
+
+# Named explicitly: the function cannot be called `report` without shadowing the
+# imported module, and Typer would otherwise expose it as `report-cmd`.
+@app.command(name="report", help=_REPORT_HELP)
+def report_cmd(
+    out: Path | None = typer.Option(
+        None, "--out", "-o",
+        help="Write here instead of specs/.meridian/report.html",
+    ),
+    open_browser: bool = typer.Option(
+        False, "--open",
+        help="Open the page in the default browser after writing",
+    ),
+    project: str | None = typer.Option(
+        None, "--project", "-p",
+        help="Render a tracked project by slug instead of the current directory",
+    ),
+):
+    if project:
+        from meridian.registry import find_project
+
+        entry = find_project(project)
+        if entry is None:
+            known = ", ".join(e.slug for e in _tracked_projects()) or "none"
+            console.print(
+                f"[red]Error:[/red] No tracked project [bold]{project}[/bold]. "
+                f"Known: {known}."
+            )
+            raise typer.Exit(1)
+        if not entry.exists:
+            console.print(
+                f"[red]Error:[/red] [bold]{project}[/bold] is registered at "
+                f"{entry.path}, which does not exist."
+            )
+            raise typer.Exit(1)
+        try:
+            cfg = load_config(entry.path)
+        except FileNotFoundError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+    else:
+        cfg = _config()
+
+    out_path = Path(out) if out else cfg.root / report.DEFAULT_OUT_RELATIVE
+
+    # A directory would otherwise surface as a bare IsADirectoryError traceback
+    # from deep inside the atomic write.
+    if out_path.is_dir():
+        console.print(
+            f"[red]Error:[/red] --out {out_path} is a directory. "
+            "Give it a file path."
+        )
+        raise typer.Exit(1)
+
+    try:
+        written = report.write_report(cfg, out_path)
+    except OSError as e:
+        console.print(f"[red]Error:[/red] Could not write {out_path}: {e}")
+        raise typer.Exit(1)
+
+    # soft_wrap: Rich hard-wraps a long path at the terminal width, inserting a
+    # newline mid-path. The one thing a user does with this line is copy it.
+    console.print(f"[green]✓[/green] Wrote {written}", soft_wrap=True)
+
+    if open_browser:
+        import webbrowser
+
+        # The file is already on disk; a desktop with no browser handler is not
+        # a reason to report failure for work that succeeded.
+        if not webbrowser.open(written.resolve().as_uri()):
+            console.print("  [yellow]⚠[/yellow]  Could not open a browser.")
+
+
+# --------------------------------------------------------------------------- #
 # next  — what should I work on, across everything? (FEAT-026)
 # --------------------------------------------------------------------------- #
 
