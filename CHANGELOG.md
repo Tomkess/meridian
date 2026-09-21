@@ -2,15 +2,67 @@
 
 ## 0.7.0 — 2026-09-21
 
-- fix(report): make the output directory ignore itself
-- docs(specs): close FEAT-028 task 28 with real browser coverage
-- chore(specs): record FEAT-028 as done
-- fix(report): size board columns by occupancy
-- fix(report): keep paths and errors unbroken in a narrow terminal
-- feat(report): add `meridian report` static HTML dashboard
-- refactor(report): extract build_payload and shared helpers into report.py
-- perf(skills): cut token cost of the spec -> breakdown -> tasks pipeline
-- docs: write the v0.6.2 changelog section
+### Added
+
+- **`meridian report` — the dashboard as a static HTML page.** One
+  self-contained file per project, generated on demand and git-ignored, showing
+  what a terminal table cannot draw: a kanban board by lifecycle status, a
+  goal x feature matrix with the gaps visible, the `depends_on`/`enables` graph
+  as inline SVG, task progress bars, and staleness heat. No server, no build
+  step, no network — it opens offline from a `file://` URL, which is asserted
+  rather than assumed: a test greps the output for any external script,
+  stylesheet, `@import`, remote `url()` or `fetch`.
+
+  A status outside the board's columns — `abandoned`, or one added to
+  `VALID_STATUSES` later — lands in a collapsed section rather than vanishing.
+  A `depends_on` pointing at an ID that does not exist is drawn as a dashed
+  edge to its own node, because the graph is the only place that typo would
+  ever be noticed. Unparseable specs are counted on the page: `all_specs`
+  warns on stderr, and a browser has no stderr.
+
+  Board columns are sized by occupancy. An equal six-way split spent two
+  thirds of the width on the states a mature project has nothing in, clamping
+  every feature name to an ellipsis; empty columns now collapse to a labelled
+  strip and keep their position, because a lifecycle state with nothing in it
+  is information.
+
+### Changed
+
+- **`status --json`'s payload is no longer inlined in `cli.py`.** It lives in
+  `meridian/report.py` as `build_payload()`, and both the CLI and the HTML
+  report call it. Two copies of that dict was the obvious way to build a
+  report and the obvious way to let the two drift apart, so a test invokes the
+  real CLI and asserts its stdout equals the function's output. The emitted
+  shape is unchanged — `goal` is still passed through raw, `'~'` included.
+
+- **Shared helpers promoted out of privates** rather than reimplemented:
+  `specs.atomic_write` (alias `_atomic_write` kept), `specs.read_goals` —
+  which `rebuild_registry` now calls, so the registry and the report's goal
+  matrix cannot disagree about what an unparseable goal looks like —
+  `portfolio.days_since_change` and `portfolio.spec_file_count`.
+
+### Fixed
+
+- **The report output directory ignores itself.** The first version met its
+  no-committed-artifact criterion by adding `/specs/.meridian/` to this repo's
+  `.gitignore` — the one repo where it mattered least. Every other tracked
+  project got an untracked file in `git status`. `write_report` now drops a
+  `.gitignore` containing `*` into the output directory, and only when it
+  creates that directory: `--out` into a directory you already have never
+  starts ignoring your files, and an existing `.gitignore` is never rewritten.
+
+- **Paths and errors survive a narrow terminal.** Rich hard-wraps at the
+  terminal width, so `--out <a directory>` printed "is a \ndirectory" and
+  split the path with it. Every line in the command that embeds a path is now
+  soft-wrapped. Found only because CI runs 80 columns and a developer's window
+  does not.
+
+### Packaging
+
+- `meridian/templates/*.tmpl` is declared in package-data, and a test builds a
+  real wheel and looks inside it. A template missing from the wheel is
+  invisible in the source tree and fails only once installed, so that test
+  deliberately fails rather than skips when no builder is available.
 
 ## 0.6.2 — 2026-08-20
 
