@@ -526,7 +526,7 @@ def _read_project(
         # `all_specs` warns on stderr and drops a spec it cannot parse. Counting
         # the files it walked past is how the view says so out loud — a cheap
         # directory listing, not a second parse.
-        unreadable_specs=max(0, _spec_file_count(specs_path) - len(specs)),
+        unreadable_specs=max(0, spec_file_count(specs_path) - len(specs)),
     )
 
 
@@ -534,11 +534,30 @@ def _read_project(
 # Small helpers
 # --------------------------------------------------------------------------- #
 
-def _spec_file_count(specs_path: Path) -> int:
+def spec_file_count(specs_path: Path) -> int:
+    """How many spec files are on disk, parseable or not.
+
+    Compared against the number of specs that actually loaded, this is how a
+    view says "one of these did not parse" out loud instead of quietly showing
+    a shorter list.
+    """
     try:
         return sum(1 for _ in specs_path.glob("FEAT-*/spec.md"))
     except OSError:  # pragma: no cover - raced deletion
         return 0
+
+
+def days_since_change(feat_dir: Path, *, now: float | None = None) -> int | None:
+    """Days since ``spec.md`` or ``tasks.md`` in *feat_dir* last changed.
+
+    FEAT-028 made this public so the report's staleness heat and the terminal
+    dashboard's ``chg`` column derive from the same mtimes. See
+    :data:`STALENESS_NOTE` for what this number does *not* mean.
+    """
+    return _days_since_mtime(
+        [feat_dir / "spec.md", feat_dir / "tasks.md"],
+        now if now is not None else time.time(),
+    )
 
 
 def _days_since_mtime(paths: Iterable[Path], now: float) -> int | None:

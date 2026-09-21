@@ -51,6 +51,10 @@ include = ["meridian*"]
 meridian = [
     "skills/commands/*.md",
     "skills/templates/*.md",
+    # FEAT-028: the HTML report's template. Omitting it here is invisible in the
+    # source tree and breaks only once installed, so tests/test_packaging.py
+    # asserts it is a member of the built wheel.
+    "templates/*.tmpl",
 ]
 
 # P3: static analysis config — run with `ruff check .` and `mypy meridian/`

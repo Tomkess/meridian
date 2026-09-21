@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from meridian import __version__, portfolio
+from meridian import __version__, portfolio, report
 from meridian.config import load_config, slugify_project
 from meridian.skilldist import open_skill_prs, sync_all, sync_skills
 from meridian.specs import (
@@ -151,16 +151,10 @@ def _cycle_capacity_summary(specs_dir: Path, cycle_id: str) -> tuple[str, bool]:
 # status
 # --------------------------------------------------------------------------- #
 
-# (frontmatter status, column header) — headers kept short so the dashboard
-# fits a normal terminal without squeezing the project name.
-_STATUS_COLUMNS = (
-    ("idea", "idea"),
-    ("draft", "draft"),
-    ("in-progress", "prog"),
-    ("blocked", "blkd"),
-    ("done", "done"),
-    ("in-production", "prod"),
-)
+# FEAT-028 moved the column list into meridian.report so the terminal dashboard
+# and the HTML report's kanban columns cannot disagree about which statuses are
+# workable. Same direction portfolio.APPETITE_WEIGHT already flows.
+_STATUS_COLUMNS = report.STATUS_COLUMNS
 
 
 def _emit_json(payload) -> None:
@@ -450,30 +444,10 @@ def status(
         raise typer.Exit(0)
 
     if as_json:
-        cfg_json = _config()
-        _emit_json({
-            "project": cfg_json.project,
-            "features": [
-                {
-                    "id": str(s.get("id", "")).upper(),
-                    "name": s.get("name"),
-                    "status": s.get("status", "idea"),
-                    "appetite": s.get("appetite"),
-                    "confidence": s.get("confidence"),
-                    "cycle": s.get("cycle"),
-                    "goal": s.get("goal"),
-                    "updated": s.get("updated"),
-                    "depends_on": s.get("depends_on") or [],
-                    "enables": s.get("enables") or [],
-                    "blocked_by": s.get("blocked_by"),
-                    "tasks": (
-                        {"checked": tp[0], "total": tp[1]}
-                        if (tp := task_progress(Path(str(s["_path"])).parent)) else None
-                    ),
-                }
-                for s in all_specs(cfg_json.specs_path)
-            ],
-        })
+        # FEAT-028: the dict used to be inlined here. Two copies of it — one for
+        # the CLI, one for the report — is exactly the drift AC2 forbids, so
+        # there is only ever this call.
+        _emit_json(report.build_payload(_config()))
 
     cfg = _config()
     specs = all_specs(cfg.specs_path)
@@ -589,6 +563,99 @@ def status(
             console.print(f"{indicator}[bold]{cycle_id}[/bold]  {len(cycle_specs)} features ({parts})")
 
     console.print()
+
+
+# --------------------------------------------------------------------------- #
+# report  — the dashboard as a static HTML page (FEAT-028)
+# --------------------------------------------------------------------------- #
+
+_REPORT_HELP = (
+    "Render this project's features as a self-contained HTML page.\n\n"
+    "The visual counterpart to `status`: a kanban board, the goal × feature "
+    "matrix, the depends_on/enables graph, task progress and staleness — the "
+    "things a terminal table cannot draw. One file, no server, no network; it "
+    "opens offline from a file:// URL.\n\n"
+    "Generated on demand and git-ignored. It is derived from specs/, so "
+    "regenerate it rather than editing it."
+)
+
+
+# Named explicitly: the function cannot be called `report` without shadowing the
+# imported module, and Typer would otherwise expose it as `report-cmd`.
+@app.command(name="report", help=_REPORT_HELP)
+def report_cmd(
+    out: Path | None = typer.Option(
+        None, "--out", "-o",
+        help="Write here instead of specs/.meridian/report.html",
+    ),
+    open_browser: bool = typer.Option(
+        False, "--open",
+        help="Open the page in the default browser after writing",
+    ),
+    project: str | None = typer.Option(
+        None, "--project", "-p",
+        help="Render a tracked project by slug instead of the current directory",
+    ),
+):
+    if project:
+        from meridian.registry import find_project
+
+        entry = find_project(project)
+        if entry is None:
+            known = ", ".join(e.slug for e in _tracked_projects()) or "none"
+            console.print(
+                f"[red]Error:[/red] No tracked project [bold]{project}[/bold]. "
+                f"Known: {known}."
+            )
+            raise typer.Exit(1)
+        if not entry.exists:
+            console.print(
+                f"[red]Error:[/red] [bold]{project}[/bold] is registered at "
+                f"{entry.path}, which does not exist."
+            )
+            raise typer.Exit(1)
+        try:
+            cfg = load_config(entry.path)
+        except FileNotFoundError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+    else:
+        cfg = _config()
+
+    out_path = Path(out) if out else cfg.root / report.DEFAULT_OUT_RELATIVE
+
+    # soft_wrap throughout this command: every one of these lines embeds a
+    # filesystem path, and Rich hard-wraps at the terminal width — inserting a
+    # newline mid-path, and mid-sentence after it. A path the user copies, and
+    # an error message they grep for, both have to survive an 80-column
+    # terminal intact.
+
+    # A directory would otherwise surface as a bare IsADirectoryError traceback
+    # from deep inside the atomic write.
+    if out_path.is_dir():
+        console.print(
+            f"[red]Error:[/red] --out is a directory, not a file: {out_path}",
+            soft_wrap=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        written = report.write_report(cfg, out_path)
+    except OSError as e:
+        console.print(
+            f"[red]Error:[/red] Could not write the report: {e}", soft_wrap=True
+        )
+        raise typer.Exit(1)
+
+    console.print(f"[green]✓[/green] Wrote {written}", soft_wrap=True)
+
+    if open_browser:
+        import webbrowser
+
+        # The file is already on disk; a desktop with no browser handler is not
+        # a reason to report failure for work that succeeded.
+        if not webbrowser.open(written.resolve().as_uri()):
+            console.print("  [yellow]⚠[/yellow]  Could not open a browser.")
 
 
 # --------------------------------------------------------------------------- #

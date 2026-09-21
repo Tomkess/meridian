@@ -37,3 +37,8 @@ build/
 # Anchored to the repo root: the shipped template and the golden fixture's own
 # registry are unaffected.
 /specs/REGISTRY.md
+
+# FEAT-028: `meridian report` output. Derived entirely from tracked specs and
+# regenerated on demand, so committing it buys nothing and conflicts on every
+# merge. Anchored to the repo root, like the registry above.
+/specs/.meridian/

@@ -125,10 +125,10 @@ def save_spec(spec_path: Path, data: dict[str, Any]) -> None:
 
     data["updated"] = _today()
     post = frontmatter.Post(body, **data)
-    _atomic_write(spec_path, frontmatter.dumps(post) + "\n")
+    atomic_write(spec_path, frontmatter.dumps(post) + "\n")
 
 
-def _atomic_write(path: Path, text: str) -> None:
+def atomic_write(path: Path, text: str) -> None:
     """Write via a sibling temp file and os.replace.
 
     FEAT-013: `Path.write_text` truncates before it writes, so a concurrent
@@ -151,6 +151,12 @@ def _atomic_write(path: Path, text: str) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+#: FEAT-028 renamed this to a public name so `meridian/report.py` could reuse it
+#: instead of adding a second mkstemp/replace implementation. The private alias
+#: stays for any caller that still reaches for it.
+_atomic_write = atomic_write
 
 
 @contextmanager
@@ -460,33 +466,48 @@ def scan_decisions(decisions_dir: Path) -> list[dict[str, str]]:
     return [_decision_entry(df) for df in sorted(decisions_dir.glob("*.md"))]
 
 
+def read_goals(specs_dir: Path) -> list[dict[str, Any]]:
+    """Every goal in ``specs/goals/``, as ``{id, name, status}`` dicts.
+
+    FEAT-028 lifted this out of :func:`rebuild_registry` so the HTML report's
+    goal × feature matrix reads goals the same way the registry does. Two
+    readers of the same directory would eventually disagree about what an
+    unparseable goal looks like, and the matrix would then hide a row the
+    registry shows.
+    """
+    goals_dir = specs_dir / "goals"
+    goals: list[dict[str, Any]] = []
+    if not goals_dir.exists():
+        return goals
+
+    for gf in sorted(goals_dir.glob("*.md")):
+        try:
+            gp = frontmatter.load(str(gf))
+        except Exception as e:
+            # FEAT-013's exact failure shape: rebuild_registry runs *after* a
+            # spec has been written to disk, so raising here leaves the spec
+            # saved, the registry stale, and the user with a traceback. Specs
+            # and decisions were guarded; goals were the last unguarded loop.
+            print(
+                f"[meridian] Warning: could not load goals/{gf.name}: {e}",
+                file=sys.stderr,
+            )
+            goals.append({"id": gf.stem, "name": gf.stem, "status": "unparseable"})
+            continue
+        goals.append({
+            "id": gp.metadata.get("id", gf.stem),
+            "name": gp.metadata.get("name", gf.stem),
+            "status": gp.metadata.get("status", "active"),
+        })
+
+    return goals
+
+
 def rebuild_registry(specs_dir: Path) -> None:
     specs = all_specs(specs_dir)
     specs.sort(key=lambda s: (STATUS_ORDER.get(s.get("status", "idea"), 99), s.get("id", "")))
 
-    goals_dir = specs_dir / "goals"
-    goals: list[dict[str, Any]] = []
-    if goals_dir.exists():
-        for gf in sorted(goals_dir.glob("*.md")):
-            try:
-                gp = frontmatter.load(str(gf))
-            except Exception as e:
-                # FEAT-013's exact failure shape: rebuild_registry runs *after* a
-                # spec has been written to disk, so raising here leaves the spec
-                # saved, the registry stale, and the user with a traceback. Specs
-                # and decisions were guarded; goals were the last unguarded loop.
-                print(
-                    f"[meridian] Warning: could not load goals/{gf.name}: {e}",
-                    file=sys.stderr,
-                )
-                goals.append({"id": gf.stem, "name": gf.stem, "status": "unparseable"})
-                continue
-            goals.append({
-                "id": gp.metadata.get("id", gf.stem),
-                "name": gp.metadata.get("name", gf.stem),
-                "status": gp.metadata.get("status", "active"),
-            })
-
+    goals = read_goals(specs_dir)
     decisions = scan_decisions(specs_dir / "decisions")
 
     lines = [
