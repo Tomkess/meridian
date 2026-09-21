@@ -38,6 +38,12 @@
 
     --radius: 6px;
     --gap: 16px;
+
+    /* Width of a board column holding nothing. An empty column keeps its place
+       in the lifecycle sequence — that nothing sits in `idea` is worth seeing —
+       but four empty columns must not eat two thirds of the board, which is
+       what an equal six-way split did. */
+    --col-empty: 2.5rem;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -146,8 +152,12 @@
 
   .board {
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    /* The track list is set per board as an inline `--cols`, not as an inline
+       `grid-template-columns`: an inline property would outrank the responsive
+       overrides below, and the board would stay six columns wide on a phone. */
+    grid-template-columns: var(--cols, repeat(6, minmax(0, 1fr)));
     gap: 12px;
+    align-items: start;
   }
   .col { min-width: 0; }
   .col > .head {
@@ -159,6 +169,24 @@
   }
   .col > .head .nm { font-size: 12px; font-weight: 600; }
   .col > .head .ct { font-size: 12px; color: var(--ink-faint); }
+
+  /* A column with nothing in it: a narrow strip, label turned on its side so it
+     stays readable, dimmed because it is context rather than content. */
+  .col.empty > .head {
+    flex-direction: column-reverse;
+    align-items: center;
+    gap: 6px;
+    border-bottom-color: var(--line);
+    padding-bottom: 10px;
+  }
+  .col.empty > .head .nm {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-weight: 500;
+    color: var(--ink-faint);
+    letter-spacing: 0.02em;
+  }
+  .col.empty > .head .ct { color: var(--ink-faint); }
 
   .card {
     background: var(--panel);
@@ -221,7 +249,7 @@
     font-size: 12px;
     color: var(--ink-dim);
   }
-  details.extra .board { margin-top: 12px; grid-template-columns: repeat(6, minmax(0,1fr)); }
+  details.extra .board { margin-top: 12px; }
 
   /* ── matrix ──────────────────────────────────────────────────────────── */
 
@@ -395,8 +423,13 @@
     border-radius: var(--radius);
   }
 
+  /* Below these widths the columns stack, so an empty one is a full-width row —
+     a sideways label there would be nonsense. Overrides `--cols` because these
+     rules set grid-template-columns directly and come later in the sheet. */
   @media (max-width: 900px) {
     .board, details.extra .board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .col.empty > .head { flex-direction: row; }
+    .col.empty > .head .nm { writing-mode: horizontal-tb; transform: none; }
   }
   @media (max-width: 560px) {
     .board, details.extra .board { grid-template-columns: 1fr; }
@@ -501,15 +534,31 @@
     return html + '</article>';
   }
 
+  // Columns are sized by occupancy. An equal six-way split spent two thirds of
+  // the board on the four states this project has nothing in, squeezing every
+  // card into a strip too narrow to read a feature name in. Empty columns keep
+  // their position — the gap is information — at a fraction of the width.
   function board(cols, list) {
-    return '<div class="board">' + cols.map(function (c) {
-      var mine = list.filter(function (f) { return f.status === c.status; });
-      return '<div class="col" style="--st:var(' + statusVar(c.status) + ')">' +
-        '<div class="head"><span class="nm">' + esc(c.label) + '</span>' +
-        '<span class="ct">' + mine.length + '</span></div>' +
-        mine.map(card).join("") +
-      '</div>';
-    }).join("") + '</div>';
+    var grouped = cols.map(function (c) {
+      return {
+        col: c,
+        items: list.filter(function (f) { return f.status === c.status; }),
+      };
+    });
+
+    var track = grouped.map(function (g) {
+      return g.items.length ? "minmax(0,1fr)" : "var(--col-empty)";
+    }).join(" ");
+
+    return '<div class="board" style="--cols:' + track + '">' +
+      grouped.map(function (g) {
+        return '<div class="col' + (g.items.length ? "" : " empty") +
+          '" style="--st:var(' + statusVar(g.col.status) + ')">' +
+          '<div class="head"><span class="nm">' + esc(g.col.label) + '</span>' +
+          '<span class="ct">' + g.items.length + '</span></div>' +
+          g.items.map(card).join("") +
+        '</div>';
+      }).join("") + '</div>';
   }
 
   function renderBoard() {

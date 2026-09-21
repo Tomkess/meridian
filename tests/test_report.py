@@ -603,6 +603,41 @@ class TestPageExecutes:
         assert "2/5 tasks" in out
         assert "no task list" in out
 
+    def test_empty_columns_collapse_but_keep_their_place(self, tmp_path):
+        """An equal split spent two thirds of the board on states this project
+        has nothing in. The column still has to be there — the gap is
+        information — just not at full width."""
+        out = self._render(tmp_path, self._payload())
+        # idea / blocked / in-progress hold cards here; draft, done and
+        # in-production do not.
+        assert 'class="col empty"' in out
+        # Every column is still rendered, empty or not.
+        for _status, label in report.STATUS_COLUMNS:
+            assert ">" + label + "<" in out
+        # The track list sizes occupied columns flexibly and empty ones by token.
+        assert "--cols:" in out
+        assert "var(--col-empty)" in out
+        assert "minmax(0,1fr)" in out
+
+    def test_track_list_matches_the_column_order(self, tmp_path):
+        """The strip has to land under the right header, so the track list is
+        positional — one entry per column, in order."""
+        import re
+
+        out = self._render(tmp_path, self._payload())
+        track = re.search(r'--cols:([^"]+)"', out).group(1).strip().split(" ")
+        assert len(track) == len(report.STATUS_COLUMNS)
+        occupied = {f["status"] for f in self._payload()["features"]}
+        for (status, _label), entry in zip(report.STATUS_COLUMNS, track):
+            expected = "minmax(0,1fr)" if status in occupied else "var(--col-empty)"
+            assert entry == expected, f"{status} got {entry}"
+
+    def test_board_sizing_does_not_use_an_inline_grid_property(self, tmp_path):
+        """An inline `grid-template-columns` would outrank the responsive
+        overrides and the board would stay six columns wide on a phone."""
+        out = self._render(tmp_path, self._payload())
+        assert "grid-template-columns" not in out
+
     def test_status_outside_the_columns_is_collapsed_not_dropped(self, tmp_path):
         out = self._render(tmp_path, self._payload())
         assert 'details class="extra"' in out
