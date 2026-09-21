@@ -20,7 +20,7 @@ name: 'HTML status report: a static, self-contained, offline HTML dashboard for 
   --json payload dict out of cli.py into a shared build_payload() in a new meridian/report.py
   so the CLI and the report cannot drift apart.'
 sources: []
-status: in-progress
+status: done
 tags: []
 updated: '2026-09-21'
 ---
