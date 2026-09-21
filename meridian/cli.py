@@ -624,23 +624,29 @@ def report_cmd(
 
     out_path = Path(out) if out else cfg.root / report.DEFAULT_OUT_RELATIVE
 
+    # soft_wrap throughout this command: every one of these lines embeds a
+    # filesystem path, and Rich hard-wraps at the terminal width — inserting a
+    # newline mid-path, and mid-sentence after it. A path the user copies, and
+    # an error message they grep for, both have to survive an 80-column
+    # terminal intact.
+
     # A directory would otherwise surface as a bare IsADirectoryError traceback
     # from deep inside the atomic write.
     if out_path.is_dir():
         console.print(
-            f"[red]Error:[/red] --out {out_path} is a directory. "
-            "Give it a file path."
+            f"[red]Error:[/red] --out is a directory, not a file: {out_path}",
+            soft_wrap=True,
         )
         raise typer.Exit(1)
 
     try:
         written = report.write_report(cfg, out_path)
     except OSError as e:
-        console.print(f"[red]Error:[/red] Could not write {out_path}: {e}")
+        console.print(
+            f"[red]Error:[/red] Could not write the report: {e}", soft_wrap=True
+        )
         raise typer.Exit(1)
 
-    # soft_wrap: Rich hard-wraps a long path at the terminal width, inserting a
-    # newline mid-path. The one thing a user does with this line is copy it.
     console.print(f"[green]✓[/green] Wrote {written}", soft_wrap=True)
 
     if open_browser:

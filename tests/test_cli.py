@@ -905,7 +905,10 @@ class TestReportCommand:
         d.mkdir()
         r = run(["report", "--out", str(d)], proj_with_idea)
         assert r.returncode == 1
+        # The phrase must survive an 80-column terminal unbroken — Rich wraps
+        # long lines, and CI is narrower than a developer's window.
         assert "is a directory" in r.stdout
+        assert str(d) in r.stdout
         assert "Traceback" not in r.stderr
 
     def test_unwritable_out_fails_readably(self, proj_with_idea: Path):
