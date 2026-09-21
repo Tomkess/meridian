@@ -401,13 +401,43 @@ class TestRenderHtml:
 # ── write_report + self-containment ───────────────────────────────────────── #
 
 class TestWriteReport:
-    def test_writes_a_single_file_and_creates_parents(self, mock_cfg, specs_dir):
+    def test_writes_the_page_and_creates_parents(self, mock_cfg, specs_dir):
         write_spec(specs_dir, "FEAT-001")
         out = mock_cfg.root / "nested" / "dir" / "report.html"
         written = report.write_report(mock_cfg, out)
         assert written == out
         assert out.exists()
-        assert list(out.parent.iterdir()) == [out]
+        # The page plus the self-ignore file it drops — and nothing else.
+        assert sorted(p.name for p in out.parent.iterdir()) == [
+            ".gitignore", "report.html",
+        ]
+
+    def test_new_output_directory_ignores_itself(self, mock_cfg, specs_dir):
+        """The ignore rule in this repo's own .gitignore only helped this repo.
+        Every other project got an untracked file in `git status`, and a setup
+        step per project is one nobody remembers."""
+        write_spec(specs_dir, "FEAT-001")
+        out = mock_cfg.root / "specs" / ".meridian" / "report.html"
+        report.write_report(mock_cfg, out)
+        assert (out.parent / ".gitignore").read_text().rstrip().endswith("*")
+
+    def test_existing_directory_is_not_given_an_ignore_file(self, mock_cfg, specs_dir):
+        """`--out` into a directory the user already has must not start
+        ignoring their files. Only a directory this command creates is ours."""
+        write_spec(specs_dir, "FEAT-001")
+        target = mock_cfg.root / "mine"
+        target.mkdir()
+        (target / "keep.txt").write_text("mine")
+        report.write_report(mock_cfg, target / "report.html")
+        assert not (target / ".gitignore").exists()
+
+    def test_an_existing_ignore_file_is_left_alone(self, mock_cfg, specs_dir):
+        write_spec(specs_dir, "FEAT-001")
+        out = mock_cfg.root / "fresh" / "report.html"
+        report.write_report(mock_cfg, out)
+        (out.parent / ".gitignore").write_text("# hand-edited\n")
+        report.write_report(mock_cfg, out)
+        assert (out.parent / ".gitignore").read_text() == "# hand-edited\n"
 
     def test_reflects_current_disk_state_with_no_caching(self, mock_cfg, specs_dir):
         """AC7. Every call re-reads the specs, so a new feature appears without

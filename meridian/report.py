@@ -365,6 +365,42 @@ def write_report(cfg, out_path: Path, *, now: float | None = None) -> Path:
     the new one, never a half-written document.
     """
     out_path = Path(out_path)
+    created = not out_path.parent.exists()
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if created:
+        _self_ignore(out_path.parent)
     atomic_write(out_path, render_html(build_report_payload(cfg, now=now)))
     return out_path
+
+
+#: Dropped into the output directory the first time it is created, so the
+#: report ignores itself in whatever repo it lands in.
+_SELF_IGNORE = """\
+# Created by `meridian report`. The report is derived entirely from specs/ and
+# regenerated on demand, so it is never worth committing.
+*
+"""
+
+
+def _self_ignore(directory: Path) -> None:
+    """Make the output directory ignore its own contents.
+
+    FEAT-028 added `/specs/.meridian/` to *this* repo's `.gitignore`, which
+    satisfied the acceptance criterion in the one repo where it mattered least.
+    Every other project running `meridian report` got an untracked file in
+    `git status` instead — and asking each of them to add an ignore rule is a
+    setup step nobody would remember.
+
+    A `.gitignore` containing `*` inside the directory ignores the directory's
+    contents in any repo, with nothing to propagate and nothing for the user to
+    configure. Written only when the directory is newly created, so a
+    deliberately committed report is never quietly un-tracked, and failure is
+    silent: the report itself succeeded, and a missing ignore file is untidy,
+    not broken.
+    """
+    try:
+        target = directory / ".gitignore"
+        if not target.exists():
+            atomic_write(target, _SELF_IGNORE)
+    except OSError:
+        pass
