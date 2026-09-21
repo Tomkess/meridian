@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0 — 2026-09-21
+
+- fix(report): make the output directory ignore itself
+- docs(specs): close FEAT-028 task 28 with real browser coverage
+- chore(specs): record FEAT-028 as done
+- fix(report): size board columns by occupancy
+- fix(report): keep paths and errors unbroken in a narrow terminal
+- feat(report): add `meridian report` static HTML dashboard
+- refactor(report): extract build_payload and shared helpers into report.py
+- perf(skills): cut token cost of the spec -> breakdown -> tasks pipeline
+- docs: write the v0.6.2 changelog section
+
 ## 0.6.2 — 2026-08-20
 
 ### Fixed
