@@ -47,9 +47,10 @@ the distinction.
   fail on a machine without the local stack.
 - **Negative / trade-offs:** `meridian install --all --pr` (FEAT-010) and `--prune` (FEAT-016) lose
   their purpose — `git add` skips ignored paths, so a propagation run against a gitignored repo
-  reports "no net change" and opens nothing. Both stay in `skilldist.py` serving the `--local` and
-  in-repo (meridian's own) paths, but the `--pr` flow is no longer part of the release ritual, and
-  `scripts/release.sh` should stop invoking it. A project's skills now track the machine, not the
+  reports "no net change" and opens nothing. Both stay in `skilldist.py` serving the `--project` and
+  in-repo (meridian's own) paths, and `--prune` keeps working in the default global mode, but the
+  `--pr` flow leaves the release ritual: `scripts/release.sh`, `.claude/commands/release.md` and
+  `CLAUDE.md` now say `meridian install`. A project's skills now track the machine, not the
   commit — checking out an old branch no longer gives the skills that authored it.
 - **Neutral:** `meridian init` behaviour is unchanged; only the gitignore differs. `.meridian.toml`
   becomes machine-local config (it already only held `lancedb_path`, model names and `specs_path` —

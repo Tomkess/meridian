@@ -39,15 +39,15 @@ other tracked projects — releasing Meridian is meaningless in `portfolio-manag
    git commit --amend --no-edit CHANGELOG.md && git push --force-with-lease
    ```
 
-5. Propagate the skills to every tracked project:
+5. Refresh the global skill install:
    ```
-   meridian install --all --pr --dry-run
-   meridian install --all --pr
+   meridian install
    ```
-   Report the per-repo results. Repos that are not git, have no `origin`, or already
-   match are skipped — that is expected, not failure.
+   Skills live only in `~/.claude/commands/meridian/` and are gitignored in consumer
+   repos (ADR-007), so there is nothing to propagate per repo — this one command
+   covers every project on the machine.
 
-6. Summarise: the version, the release URL, and which repos got skill PRs.
+6. Summarise: the version, the release URL, and the skills added/updated/removed.
 
 ## Notes
 

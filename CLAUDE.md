@@ -13,9 +13,8 @@ idea → spec → tasks → build → production. It is designed to be installed
 meridian status                              # full dashboard (task progress, deps, confidence)
 meridian status --json                       # machine-readable — for skills and scripts
 meridian register                            # track this repo in the cross-project dashboard
-meridian install --all                       # push skills into every tracked repo
-meridian install --all --pr                  # ...as a PR per repo (working trees untouched)
-meridian install --all --prune               # also remove skills Meridian no longer ships
+meridian install                             # install/refresh skills in ~/.claude/commands/meridian/
+meridian install --prune                     # also remove skills Meridian no longer ships
 meridian projects                            # list every tracked project
 meridian status --all                        # cross-project dashboard (+ staleness, capacity)
 meridian next                                # what to work on next, ranked across all projects
@@ -70,7 +69,7 @@ meridian help                                # list every command
 ```bash
 ./scripts/release.sh patch --dry-run     # preview (refuses unless main + clean + synced)
 ./scripts/release.sh patch               # bump, verify, changelog, tag, GitHub release
-meridian install --all --pr              # propagate the new skills to tracked repos
+meridian install                         # refresh the global skills (ADR-007: no per-repo copies)
 ```
 
 Or run `/release` in Claude Code, which drives the same script and handles the

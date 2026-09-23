@@ -133,8 +133,11 @@ cat <<EOF
 $(printf '\033[32m✓\033[0m') ${TAG} released.
 
 Next:
-  meridian install --all --pr --dry-run   # preview skill PRs into tracked repos
-  meridian install --all --pr             # open them
+  meridian install                        # refresh ~/.claude/commands/meridian/
+
+Skills install globally and are gitignored in consumer repos (ADR-007), so
+there are no per-repo skill PRs to open — one install covers every project on
+this machine.
 
 Note: your local install is editable (uv tool install --editable), so this
 machine already runs the new code. Other machines install with:
